@@ -1,0 +1,9 @@
+# Runtime dependencies (needed to run digidice_app.py):
+Pillow>=10.0
+tkinterdnd2>=0.3.0
+
+# The app itself does no encryption and holds no key -- see digidice_package.py.
+
+# Build-only. Not needed to run the app -- install it when you want to package
+# an .exe (see build_instructions.md):
+#   pip install pyinstaller
