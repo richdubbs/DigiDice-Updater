@@ -12,24 +12,36 @@ https://<base>/app.bin.enc   (+ app.ver next to it)
 Nothing dynamic is required: static files behind HTTPS is the whole protocol.
 There is no server-side component to run.
 
-## The live setup: GitHub Releases on a separate public repo
+## The live setup: GitHub Releases on the public source-mirror repo
 
 `DEFAULT_BASE_URL` in `digidice_update.py` is baked in and points at
 
 ```
-https://github.com/richdubbs/DigiDice-releases/releases/latest/download
+https://github.com/richdubbs/DigiDice-Updater/releases/latest/download
 ```
 
-`richdubbs/DigiDice-releases` is a **separate, public** repo holding nothing
-but built artifacts — no source, ever. That separation is the whole point:
-this main `DigiDice` repo stays private because `encrypt_app.py` /
-`Launcher.ino` carry the AES key that seals firmware (see the security note in
-`CLAUDE.md`), and a base URL the shipped `.exe` talks to has to be reachable
-with **no credential embedded in the app** — anything baked into a distributed
-`.exe` is recoverable from it. A GitHub token with read access to a private
-repo would hand out that same repo's source, key included, to anyone who
-unpacked the `.exe`. Publishing the sealed pair to a public *releases-only*
-repo sidesteps that: there's nothing sensitive in it to leak.
+`richdubbs/DigiDice-Updater` is a **public** repo. Its git tree holds a
+source-only mirror of this `windows_app/` directory (published for
+transparency and self-building, see that repo's README); its Releases tab
+holds the built artifacts this file describes. Combining the two roles in
+one repo is fine because neither the app's source nor its built output
+contains the AES key.
+
+The main `DigiDice` repo stays private for a different reason:
+`encrypt_app.py` / `Launcher.ino` carry the AES key that seals firmware (see
+the security note in `CLAUDE.md`), and a base URL the shipped `.exe` talks to
+has to be reachable with **no credential embedded in the app** — anything
+baked into a distributed `.exe` is recoverable from it. A GitHub token with
+read access to the private repo would hand out that repo's source, key
+included, to anyone who unpacked the `.exe`. Publishing to a public repo that
+never holds the key — whether or not it also holds non-secret source —
+sidesteps that entirely.
+
+There used to be a second public repo, `richdubbs/DigiDice-releases`, that
+held only artifacts and no source. It's now archived and private — having
+two public repos for one small project was more confusing than the extra
+separation was worth, once it was clear the source mirror itself was already
+safe to combine with release hosting.
 
 GitHub's `.../releases/latest/download/<filename>` URLs 302-redirect (twice)
 to whatever asset by that name is attached to the most recently published
@@ -47,7 +59,7 @@ It seals nothing itself — run `encrypt_app.py` first — but takes the
 `app.bin.enc`/`app.ver` pair at the repo root, computes the manifest (version
 tag = today's date + the current git short hash, sha256, size), and calls
 `gh release create` (or `gh release upload --clobber` if that tag already
-exists) against `richdubbs/DigiDice-releases`. Pass `--exe path\to\DigiDice
+exists) against `richdubbs/DigiDice-Updater`. Pass `--exe path\to\DigiDice
 Updater.exe` to publish a Windows app self-update in the same release; its
 version comes from `APP_VERSION` in `digidice_app.py`. Requires the `gh` CLI,
 authenticated with push access to that repo. `--dry-run` prints the manifest
@@ -163,13 +175,20 @@ image the device will take.
    `build_instructions.md`), bumping `APP_VERSION` first.
 4. From `windows_app/`: `python publish_release.py --notes "what changed"` —
    add `--exe path\to\DigiDice Updater.exe` if step 3 applies. This builds
-   `version.json` and publishes everything to `richdubbs/DigiDice-releases`
+   `version.json` and publishes everything to `richdubbs/DigiDice-Updater`
    in one shot (see "The live setup" above).
 
 Step 4 is the one that actually ships it — until a new release is published
 there, nothing will offer it. On a different host, the equivalent of step 4 is
 copying the changed files up and hand-editing `version.json` with the new
 version strings, sizes and hashes.
+
+Publishing a release only touches that repo's Releases tab, via `gh
+release` — it does not update the source files visible in its git tree. If
+`windows_app/` source changed (step 3, or anything else), re-copy the
+current files into a checkout of `richdubbs/DigiDice-Updater` and commit
+them there separately. See that repo's note in `CLAUDE.md` for why that's a
+fresh commit, never a history-preserving merge from this repo.
 
 ## How the app update lands
 

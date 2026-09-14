@@ -16,6 +16,14 @@ see that repo's `CLAUDE.md` for why.
 
 See [build_instructions.md](build_instructions.md).
 
+## Releases
+
+This repo's [Releases](../../releases) tab is also the live host the app's
+Updates tab pulls new builds from — see `release_host.md` for the exact
+layout and `digidice_update.py`'s `DEFAULT_BASE_URL`. Publishing a release
+only adds files there; it doesn't change the source checked into this repo,
+which is updated separately.
+
 ## Windows SmartScreen
 
 A freshly built, unsigned `.exe` will typically trigger "Windows protected

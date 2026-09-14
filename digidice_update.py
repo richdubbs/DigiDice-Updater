@@ -52,7 +52,7 @@ MANIFEST_NAME = "version.json"
 #   1. the DIGIDICE_UPDATE_URL environment variable
 #   2. update_source.json next to the .exe, {"base_url": "https://..."}
 #   3. this constant
-DEFAULT_BASE_URL = "https://github.com/richdubbs/DigiDice-releases/releases/latest/download"
+DEFAULT_BASE_URL = "https://github.com/richdubbs/DigiDice-Updater/releases/latest/download"
 
 CONFIG_NAME = "update_source.json"
 USER_AGENT = "DigiDiceUpdater"
