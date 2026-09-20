@@ -152,8 +152,9 @@ class App:
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         tk.Frame(self.root, bg=BORDER, width=1).pack(side="left", fill="y")
-        brand = tk.Frame(sidebar, bg=PANEL)
-        brand.pack(fill="x", padx=20, pady=(36, 48))
+        brand = tk.Frame(sidebar, bg="#000000", height=116)
+        brand.pack(fill="x")
+        brand.pack_propagate(False)
         self._logo(brand)
         self.nav_updates = Button(sidebar, "↑   Updates", lambda: self.show_screen(0),
                                   navigation=True, height=60, size=13)
@@ -188,13 +189,14 @@ class App:
                 # Trim only empty asset margins at display time; retain the original.
                 bounds = source.convert("L").point(lambda v: 255 if v > 45 else 0).getbbox()
                 image = source.crop(bounds) if bounds else source.copy()
-                image.thumbnail((166, 40), Image.Resampling.LANCZOS)
+                image.thumbnail((208, 116), Image.Resampling.LANCZOS)
                 self.logo = ImageTk.PhotoImage(image, master=self.root)
                 icon = source.crop((274, 323, 518, 548))
                 icon.thumbnail((32, 32), Image.Resampling.LANCZOS)
                 self.app_icon = ImageTk.PhotoImage(icon, master=self.root)
                 self.root.iconphoto(True, self.app_icon)
-            tk.Label(parent, image=self.logo, bg=parent.cget("bg")).pack(side="left")
+            tk.Label(parent, image=self.logo, bg=parent.cget("bg"),
+                     borderwidth=0, highlightthickness=0).pack(fill="both", expand=True)
         except OSError:
             label(parent, "DigiDice", size=21, color=CYAN, bold=True).pack(side="left")
 
