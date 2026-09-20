@@ -28,7 +28,7 @@ except ImportError:
     HAS_DND = False
 
 APP_TITLE = "DigiDice Updater"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 UPDATE_PATH = "MENU > SETTINGS > UPDATE"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
 FINISH_TEXT = "Copied successfully. Eject the drive in Windows, then restart your DigiDice."
@@ -152,7 +152,7 @@ class App:
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         tk.Frame(self.root, bg=BORDER, width=1).pack(side="left", fill="y")
-        brand = tk.Frame(sidebar, bg="#000000", height=116)
+        brand = tk.Frame(sidebar, bg="#000000", height=52)
         brand.pack(fill="x")
         brand.pack_propagate(False)
         self._logo(brand)
