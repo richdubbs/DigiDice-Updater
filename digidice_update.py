@@ -20,8 +20,7 @@ Two independent things can be updated, and they are not the same shape:
 Everything here is stdlib-only (urllib, hashlib, subprocess) on purpose — the
 packaged .exe should not grow a new dependency just to fetch a file.
 
-HOST LAYOUT — see release_host.md. The short version: serve a version.json
-next to the two files it describes, over HTTPS.
+HOST LAYOUT — serve a version.json next to the files it describes, over HTTPS.
 """
 
 from __future__ import annotations
@@ -41,8 +40,7 @@ from typing import Callable, Optional
 MANIFEST_NAME = "version.json"
 
 # Where releases live. A public GitHub repo holding only built artifacts —
-# never DigiDice2 source, which is where the firmware AES key lives (see
-# release_host.md and the security note in the repo's CLAUDE.md). GitHub's
+# never DigiDice2 source, which is where the firmware AES key lives. GitHub's
 # ".../releases/latest/download/<name>" URLs 302-redirect to whatever was most
 # recently published, so this behaves exactly like the static host below with
 # no server of our own and no auth: publishing a new release *is* publishing
@@ -53,6 +51,7 @@ MANIFEST_NAME = "version.json"
 #   2. update_source.json next to the .exe, {"base_url": "https://..."}
 #   3. this constant
 DEFAULT_BASE_URL = "https://github.com/richdubbs/DigiDice-Updater/releases/latest/download"
+SOURCE_COMPARE_URL = "https://api.github.com/repos/richdubbs/DigiDice-Updater/compare/{revision}...master"
 
 CONFIG_NAME = "update_source.json"
 USER_AGENT = "DigiDiceUpdater"
@@ -77,6 +76,22 @@ class Release:
     # firmware only: where app.ver lives. Defaults to app.ver alongside the
     # image, which is how encrypt_app.py emits the pair.
     ver_url: str = ""
+
+
+@dataclass
+class SourceStatus:
+    """How a source checkout relates to the public repository's master branch."""
+    relation: str
+    local_revision: str
+    remote_revision: str
+    ahead_by: int = 0
+    behind_by: int = 0
+
+    @property
+    def update_available(self) -> bool:
+        # In GitHub's comparison response, the head is public master. It is
+        # "ahead" when public master contains commits the local checkout lacks.
+        return self.ahead_by > 0
 
 
 # ── Where we are on disk ───────────────────────────────────────────────────
@@ -201,6 +216,55 @@ def fetch_manifest() -> "tuple[Optional[Release], Optional[Release]]":
     app = _release_from(data["app"], manifest_url, "app") if data.get("app") else None
     fw = _release_from(data["firmware"], manifest_url, "firmware") if data.get("firmware") else None
     return app, fw
+
+
+def local_source_revision() -> str:
+    """Return this checkout's Git revision, or explain why it cannot be read."""
+    if is_frozen():
+        raise UpdateError("The packaged Windows app is not a source checkout.")
+    try:
+        result = subprocess.run(
+            ["git", "-C", app_dir(), "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UpdateError(f"Could not read the source revision with Git: {exc}")
+
+    revision = result.stdout.strip().lower()
+    if result.returncode or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        detail = result.stderr.strip() or "this folder is not a Git checkout"
+        raise UpdateError(f"Could not read the source revision: {detail}")
+    return revision
+
+
+def fetch_source_status() -> SourceStatus:
+    """Compare a source checkout with the public repository without changing it."""
+    local = local_source_revision()
+    url = SOURCE_COMPARE_URL.format(revision=local)
+    raw = _get(url)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        relation = str(data["status"]).strip().lower()
+        commits = data.get("commits") or []
+        # GitHub's compare response lists commits reachable from public master
+        # but not the local revision. When there are none, public master is the
+        # merge base (the checkouts are identical, or the local one is ahead).
+        remote_commit = commits[-1] if commits else data["merge_base_commit"]
+        remote = str(remote_commit["sha"]).strip().lower()
+        ahead_by = int(data.get("ahead_by", 0))
+        behind_by = int(data.get("behind_by", 0))
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpdateError(f"The source comparison response could not be read: {exc}")
+
+    if relation not in {"identical", "ahead", "behind", "diverged"}:
+        raise UpdateError(f"The source comparison returned an unknown status: {relation}")
+    if not re.fullmatch(r"[0-9a-f]{40}", remote):
+        raise UpdateError("The source comparison did not include a valid public revision.")
+    return SourceStatus(relation, local, remote, ahead_by, behind_by)
 
 
 # ── Downloading ────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 """Exercise UI behavior against temporary drives; never writes to real devices."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import struct
@@ -15,6 +16,26 @@ import digidice_image
 import digidice_update
 
 
+class SourceUpdateTests(unittest.TestCase):
+    def test_public_commits_are_reported_without_changing_the_checkout(self):
+        local = "1" * 40
+        remote = "2" * 40
+        response = json.dumps({
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": "3" * 40}, {"sha": remote}],
+            "merge_base_commit": {"sha": local},
+        }).encode()
+        with patch.object(digidice_update, "local_source_revision", return_value=local), \
+                patch.object(digidice_update, "_get", return_value=response) as get:
+            status = digidice_update.fetch_source_status()
+        self.assertTrue(status.update_available)
+        self.assertEqual(status.remote_revision, remote)
+        get.assert_called_once_with(
+            digidice_update.SOURCE_COMPARE_URL.format(revision=local))
+
+
 class GuidedUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -23,6 +44,8 @@ class GuidedUITests(unittest.TestCase):
         cls.discovery.start()
         cls.host.start()
         cls.app = gui.App()
+        cls.app.root.after_cancel(cls.app._poll_id)
+        cls.app._poll_id = None
         cls.app.root.withdraw()
         cls.app.root.report_callback_exception = lambda *args: cls.callback_errors.append(args)
         cls.callback_errors = []
@@ -58,7 +81,10 @@ class GuidedUITests(unittest.TestCase):
         a.drive_var.set("Test DigiDice")
         a.host = ""
         a.app_release = a.fw_release = a.remote_token = a.package = None
+        a.source_status = None
+        a.source_check_error = ""
         a.completed_drive = None
+        a.online_busy = a.online_error = ""
         a.checked = False
         a.pending = []
         a.source = "file"
@@ -83,14 +109,14 @@ class GuidedUITests(unittest.TestCase):
         a = self.app
         a.load_package(str(enc))
         self.drain()
-        self.assertTrue(a.update_btn.enabled)
-        a.update_btn.invoke()
+        self.assertTrue(a.manual_update_btn.enabled)
+        a.manual_update_btn.invoke()
         self.drain()
         self.assertEqual((self.drive / "app.bin.enc").read_bytes(), enc.read_bytes())
         self.assertEqual((self.drive / "app.ver").read_text().strip(), token)
-        self.assertEqual(a.update_steps.active, 2)
+        self.assertEqual(a.firmware_state.cget("text"), "Ready to restart")
         with patch.object(gui.messagebox, "askyesno", return_value=False) as question:
-            a.update_device()
+            a.update_device("file")
             question.assert_called_once()
         self.assertFalse(a.busy)
 
@@ -103,7 +129,7 @@ class GuidedUITests(unittest.TestCase):
         a.load_package(str(enc))
         self.drain()
         self.assertIsNone(a.package)
-        self.assertFalse(a.update_btn.enabled)
+        self.assertFalse(a.manual_update_btn.enabled)
         self.assertTrue(a.log_open)
         self.assertIn("could not be loaded", a.file_state.cget("text"))
 
@@ -164,12 +190,15 @@ class GuidedUITests(unittest.TestCase):
         release = digidice_update.Release("2.0.0", "https://example.test/app.bin.enc", md5=hashlib.md5(enc.read_bytes()).hexdigest(), ver_url="https://example.test/app.ver", notes="Test release notes")
         a = self.app
         a.host = "https://example.test"
-        with patch.object(digidice_update, "fetch_manifest", return_value=(None, release)), patch.object(digidice_update, "_get", return_value=(token+"\n").encode()):
+        source = digidice_update.SourceStatus("identical", "1"*40, "1"*40)
+        with patch.object(digidice_update, "fetch_manifest", return_value=(None, release)), \
+                patch.object(digidice_update, "_get", return_value=(token+"\n").encode()), \
+                patch.object(digidice_update, "fetch_source_status", return_value=source):
             a.check_updates()
             self.drain()
         self.assertEqual(a.remote_token, token)
-        self.assertTrue(a.notes_btn.enabled)
-        a.select_source("online")
+        self.assertIn("up to date", a.app_state.cget("text"))
+        self.assertEqual(a.update_btn.text, "Update DigiDice Now!")
         def download(url, destination, **kwargs):
             data = enc.read_bytes() if url.endswith(".enc") else (token+"\n").encode()
             Path(destination).write_bytes(data)
@@ -177,10 +206,10 @@ class GuidedUITests(unittest.TestCase):
                 kwargs["progress"](len(data), len(data))
             return destination
         with patch.object(digidice_update, "cache_dir", return_value=str(self.base)), patch.object(digidice_update, "download", side_effect=download):
-            a.update_device()
+            a.update_btn.invoke()
             self.drain()
         self.assertEqual((self.drive / "app.bin.enc").read_bytes(), enc.read_bytes())
-        self.assertIn("already on the card", a.firmware_state.cget("text"))
+        self.assertEqual(a.update_btn.text, "Update copied!")
 
     def test_online_failure_recovers_and_manual_still_works(self):
         a = self.app
@@ -189,7 +218,8 @@ class GuidedUITests(unittest.TestCase):
             a.check_updates()
             self.drain()
         self.assertFalse(a.busy)
-        self.assertTrue(a.check_btn.enabled)
+        self.assertTrue(a.update_btn.enabled)
+        self.assertEqual(a.update_btn.text, "Try again")
         self.assertTrue(a.browse_update.enabled)
         self.assertIsNone(a.fw_release)
 
@@ -236,9 +266,103 @@ class GuidedUITests(unittest.TestCase):
         self.drain()
         self.assertFalse(a.update_btn.enabled)
         self.assertFalse(a.upload_btn.enabled)
-        self.assertFalse(a.check_btn.enabled)
-        self.assertIn("aren't available", a.firmware_state.cget("text"))
-        self.assertEqual(a.update_steps.active, 0)
+        self.assertEqual(a.update_btn.text, "Online updates unavailable")
+        self.assertIn("More options", a.update_hint.cget("text"))
+
+    def test_one_button_checks_without_a_device_then_offers_install_on_connection(self):
+        a = self.app
+        a.host = "https://example.test"
+        a.drive_var.set("")
+        self.drain()
+        release = digidice_update.Release("2.0", "https://example.test/app.bin.enc")
+        source = digidice_update.SourceStatus("identical", "1"*40, "1"*40)
+        self.assertEqual(a.update_btn.text, "Get the latest update")
+        with patch.object(digidice_update, "fetch_manifest", return_value=(None, release)) as check, \
+                patch.object(digidice_update, "fetch_firmware_token", return_value="a"*32), \
+                patch.object(digidice_update, "fetch_source_status", return_value=source), \
+                patch.object(digidice_update, "download") as download:
+            a.update_btn.invoke()
+            self.assertFalse(a.update_btn.enabled)
+            a.update_btn.invoke()  # Double-click cannot start a second request.
+            self.drain()
+            check.assert_called_once()
+            download.assert_not_called()
+        self.assertEqual(a.update_btn.text, "Please Connect DigiDice!")
+        self.assertEqual(a.update_btn.color, gui.ORANGE)
+        a._drives_found([gui.digidice_drive.DriveInfo(str(self.drive), "DigiDice", True)])
+        self.drain()
+        self.assertEqual(a.update_btn.text, "Update DigiDice Now!")
+        a._drives_found([])
+        self.drain()
+        self.assertEqual(a.update_btn.text, "Please Connect DigiDice!")
+
+    def test_matching_card_and_missing_release_never_offer_installation(self):
+        a = self.app
+        a.host = "https://example.test"
+        a.checked = True
+        a.sync()
+        self.assertEqual(a.firmware_state.cget("text"), "No update published yet")
+        a.fw_release = digidice_update.Release("2.0", "https://example.test/app.bin.enc")
+        a.remote_token = "a"*32
+        (self.drive / "app.ver").write_text(a.remote_token)
+        a.sync()
+        self.assertEqual(a.firmware_state.cget("text"), "DigiDice is up to date")
+        self.assertEqual(a.update_btn.text, "Check again")
+
+    def test_detection_does_not_guess_between_devices_or_choose_unrelated_usb(self):
+        a = self.app
+        a.drive_var.set("")
+        a._drives_found([gui.digidice_drive.DriveInfo(str(self.drive), "Other USB", False)])
+        self.assertIsNone(a.resolve_drive())
+        other = self.base / "second-card"
+        other.mkdir()
+        a._drives_found([
+            gui.digidice_drive.DriveInfo(str(self.drive), "DigiDice A", True),
+            gui.digidice_drive.DriveInfo(str(other), "DigiDice B", True)])
+        self.assertIsNone(a.resolve_drive())
+
+    def test_bad_firmware_token_is_retryable_and_does_not_offer_install(self):
+        a = self.app
+        a.host = "https://example.test"
+        a.sync()
+        release = digidice_update.Release("2.0", "https://example.test/app.bin.enc")
+        with patch.object(digidice_update, "fetch_manifest", return_value=(None, release)), \
+                patch.object(digidice_update, "fetch_firmware_token", side_effect=digidice_update.UpdateError("bad token")):
+            a.update_btn.invoke()
+            self.drain()
+        self.assertFalse(a.checked)
+        self.assertIsNone(a.fw_release)
+        self.assertEqual(a.update_btn.text, "Try again")
+
+    def test_failed_download_keeps_card_unchanged_and_allows_retry(self):
+        a = self.app
+        a.host = "https://example.test"
+        a.checked = True
+        a.fw_release = digidice_update.Release("2.0", "https://example.test/app.bin.enc")
+        a.remote_token = "a"*32
+        a.sync()
+        with patch.object(digidice_update, "cache_dir", return_value=str(self.base)), \
+                patch.object(digidice_update, "download", side_effect=digidice_update.UpdateError("offline")):
+            a.update_btn.invoke()
+            self.drain()
+        self.assertFalse((self.drive / "app.bin.enc").exists())
+        self.assertEqual(a.update_btn.text, "Try again")
+        self.assertTrue(a.update_btn.enabled)
+
+    def test_sidebar_hides_secondary_controls_and_removes_step_sections(self):
+        a = self.app
+        a.show_screen(0)
+        self.drain()
+        self.assertFalse(a.options_page.winfo_manager())
+        self.assertFalse(hasattr(a, "update_steps"))
+        self.assertFalse(hasattr(a, "token_steps"))
+        self.assertFalse(hasattr(a, "check_btn"))
+        self.assertFalse(hasattr(a, "notes_btn"))
+        self.assertTrue(a.nav_updates.selected)
+        a.nav_options.invoke()
+        self.drain()
+        self.assertEqual(a.screens.active, 2)
+        self.assertTrue(a.nav_options.selected)
 
 
 if __name__ == "__main__":

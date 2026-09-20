@@ -19,7 +19,7 @@ import digidice_image
 import digidice_package
 import digidice_update
 from digidice_ui import (BG, PANEL, BORDER, TEXT, MUTED, LIME, CYAN, ORANGE,
-                         BLUE, PURPLE, RED, Button, Card, Screens, Steps, label, theme)
+                         BLUE, PURPLE, RED, Button, Card, Screens, label, theme)
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -28,7 +28,7 @@ except ImportError:
     HAS_DND = False
 
 APP_TITLE = "DigiDice Updater"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 UPDATE_PATH = "MENU > SETTINGS > UPDATE"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
 FINISH_TEXT = "Copied successfully. Eject the drive in Windows, then restart your DigiDice."
@@ -99,18 +99,23 @@ class App:
         self.root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
         self.root.title(APP_TITLE)
         theme(self.root)
-        self.root.geometry(f"840x{min(940, self.root.winfo_screenheight()-100)}")
-        self.root.minsize(740, 620)
+        self.root.geometry(f"1060x{min(720, self.root.winfo_screenheight()-100)}")
+        self.root.minsize(900, 600)
         self.events = queue.SimpleQueue()
         self.busy = self.closed = False
         self._pump_id = self._drive_job = None
+        self._poll_id = None
+        self._scan_running = False
+        self.online_busy = ""
+        self.online_error = ""
         self._buttons = []
         self.drive_map = {}
         self.drive_var = tk.StringVar(self.root)
-        self.source = "online"
         self.package = None
         self.package_path = ""
         self.app_release = self.fw_release = self.remote_token = None
+        self.source_status = None
+        self.source_check_error = ""
         self.checked = False
         self.completed_drive = None
         self.pending = []
@@ -122,8 +127,6 @@ class App:
         except digidice_update.UpdateError as exc:
             self.host = ""
             self.log_lines.append(str(exc))
-        if not self.host:
-            self.source = "file"
         self._build()
         for line in list(self.log_lines):
             self.log_text.configure(state="normal")
@@ -136,6 +139,7 @@ class App:
         self.root.bind("<Control-2>", lambda e: self.show_screen(1))
         self.show_screen(0)
         self.refresh_drives()
+        self._poll_id = self.root.after(2000, self._poll_drives)
         self._pump()
 
     def button(self, parent, text, command, **kwargs):
@@ -144,37 +148,25 @@ class App:
         return button
 
     def _build(self):
+        sidebar = tk.Frame(self.root, bg=PANEL, width=208)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        tk.Frame(self.root, bg=BORDER, width=1).pack(side="left", fill="y")
+        brand = tk.Frame(sidebar, bg=PANEL)
+        brand.pack(fill="x", padx=20, pady=(36, 48))
+        self._logo(brand)
+        self.nav_updates = Button(sidebar, "↑   Updates", lambda: self.show_screen(0),
+                                  navigation=True, height=60, size=13)
+        self.nav_updates.pack(fill="x")
+        self.nav_tokens = Button(sidebar, "▧   Tokens", lambda: self.show_screen(1),
+                                 navigation=True, height=60, size=13)
+        self.nav_tokens.pack(fill="x", pady=(6, 0))
+        self.nav_options = Button(sidebar, "More options", lambda: self.show_screen(2),
+                                  navigation=True, height=56, size=11)
+        self.nav_options.pack(side="bottom", fill="x", pady=(0, 20))
+        tk.Frame(sidebar, bg=BORDER, height=1).pack(side="bottom", fill="x", padx=22, pady=10)
         shell = tk.Frame(self.root, bg=BG)
-        shell.pack(fill="both", expand=True, padx=20, pady=(15, 12))
-        header = tk.Frame(shell, bg=BG)
-        header.pack(fill="x", pady=(0, 14))
-        self._logo(header)
-        self.drive_combo = ttk.Combobox(header, textvariable=self.drive_var, width=19)
-        self.drive_combo.pack(side="left", padx=(12, 10))
-        self.connection = label(header, "●  Select drive", size=10, color=MUTED)
-        self.connection.pack(side="left")
-        Button(header, "Connection help", self.connection_help, width=130, height=36, size=10).pack(side="right")
-        self.refresh_btn = self.button(header, "Refresh", self.refresh_drives, width=82, height=36, size=10)
-        self.refresh_btn.pack(side="right", padx=8)
-        navigation = tk.Frame(shell, bg=BG)
-        navigation.pack(fill="x", pady=(0, 10))
-        navigation.columnconfigure((0, 1), weight=1, uniform="nav")
-        self.nav_updates = Button(navigation, "↑   Updates", lambda: self.show_screen(0), color=ORANGE, height=52, size=15)
-        self.nav_updates.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.nav_tokens = Button(navigation, "▧   Tokens", lambda: self.show_screen(1), color=BLUE, height=52, size=15)
-        self.nav_tokens.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        footer = Card(shell, padding=10)
-        footer.pack(side="bottom", fill="x", pady=(8, 0))
-        self.log_toggle = Button(footer.body, "⌄   Activity log", self.toggle_log, width=180, height=32, size=10)
-        self.log_toggle.pack(side="left")
-        Button(footer.body, "Support & details", self.support, width=160, height=32, size=10).pack(side="right")
-        self.log_frame = tk.Frame(shell, bg=BG)
-        self.log_text = tk.Text(self.log_frame, bg=PANEL, fg=MUTED, insertbackground=TEXT,
-                                height=6, wrap="word", state="disabled", relief="flat", font=("Consolas", 9))
-        self.log_text.pack(side="left", fill="both", expand=True)
-        log_scroll = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
-        log_scroll.pack(side="right", fill="y")
-        self.log_text.configure(yscrollcommand=log_scroll.set)
+        shell.pack(side="left", fill="both", expand=True, padx=32, pady=(42, 20))
         self.status_frame = tk.Frame(shell, bg=BG)
         self.status_frame.pack(side="bottom", fill="x", pady=(8, 0))
         self.progress = ttk.Progressbar(self.status_frame, mode="determinate", maximum=100)
@@ -184,8 +176,10 @@ class App:
         self.screens.pack(fill="both", expand=True)
         self.updates_page = self.screens.add()
         self.tokens_page = self.screens.add()
+        self.options_page = self.screens.add()
         self._build_updates(self.updates_page.body)
         self._build_tokens(self.tokens_page.body)
+        self._build_options(self.options_page.body)
 
     def _logo(self, parent):
         path = Path(__file__).parent / "assets" / "digidice-logo.png"
@@ -200,59 +194,84 @@ class App:
                 icon.thumbnail((32, 32), Image.Resampling.LANCZOS)
                 self.app_icon = ImageTk.PhotoImage(icon, master=self.root)
                 self.root.iconphoto(True, self.app_icon)
-            tk.Label(parent, image=self.logo, bg=BG).pack(side="left")
+            tk.Label(parent, image=self.logo, bg=parent.cget("bg")).pack(side="left")
         except OSError:
             label(parent, "DigiDice", size=21, color=CYAN, bold=True).pack(side="left")
 
     def _build_updates(self, parent):
-        label(parent, "Update your DigiDice", size=23, color=LIME, bold=True).pack(fill="x", pady=(0, 3))
-        self.update_steps = Steps(parent, [("Connect", "Select your device"), ("Choose update", "Online or from a file"), ("Finish", "Eject and restart")])
-        self.update_steps.pack(fill="x", pady=(0, 10))
-        main = Card(parent)
+        heading = label(parent, "Keep your DigiDice ready", size=25, color=LIME, bold=True)
+        heading.pack(fill="x", pady=(8, 30))
+        heading.bind("<Configure>", lambda e: heading.configure(wraplength=max(200, e.width-4)))
+        main = Card(parent, padding=28)
         main.pack(fill="x", padx=(0, 3))
-        label(main.body, "Choose your update", size=15, bold=True).pack(fill="x", pady=(0, 8))
-        sources = tk.Frame(main.body, bg=PANEL)
-        sources.pack(fill="x")
-        sources.columnconfigure((0, 1), weight=1, uniform="sources")
-        self.online_card = Card(sources, padding=10, width=1)
-        self.online_card.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self.file_card = Card(sources, padding=10, width=1)
-        self.file_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        self.online_box, self.file_box = self.online_card.body, self.file_card.body
-        self.online_select = self.button(self.online_box, "●  Get latest update (online)", lambda: self.select_source("online"), height=40, size=10)
-        self.online_select.pack(fill="x")
-        label(self.online_box, "Check for the newest version\nfor your DigiDice.", color=MUTED, size=10).pack(fill="x", pady=8)
-        self.firmware_state = label(self.online_box, "", color=MUTED, size=10, wraplength=270, height=2)
-        self.firmware_state.pack(fill="x", pady=(0, 8))
-        self.check_btn = self.button(self.online_box, "Check for updates", self.check_updates, height=38, size=10)
-        self.check_btn.pack(fill="x")
-        self.notes_btn = self.button(self.online_box, "View changes", self.show_changes, height=32, size=10)
-        self.notes_btn.pack(fill="x", pady=(6, 0))
-        self.file_select = self.button(self.file_box, "○  Use a file", lambda: self.select_source("file"), height=40, size=10)
-        self.file_select.pack(fill="x")
-        label(self.file_box, "Select a local update file\nprovided for your DigiDice.", color=MUTED, size=10).pack(fill="x", pady=8)
-        self.file_state = label(self.file_box, "No update file selected", size=10, color=MUTED, wraplength=270, height=2)
-        self.file_state.pack(fill="x", pady=(0, 8))
-        self.browse_update = self.button(self.file_box, "Choose update file…", self.choose_package, height=38, size=10)
-        self.browse_update.pack(fill="x")
-        label(self.file_box, "Select app.bin.enc with app.ver\nbeside it.", size=9, color=MUTED).pack(fill="x", pady=(8, 0))
-        self.update_btn = self.button(main.body, "↑   Update DigiDice", self.update_device, color=ORANGE, height=51, size=15)
-        self.update_btn.pack(fill="x", pady=(15, 10))
-        label(main.body, "ⓘ  After copying, eject in Windows and restart your DigiDice.", size=10, color=MUTED, wraplength=650).pack(fill="x")
+        row = tk.Frame(main.body, bg=PANEL)
+        row.pack(fill="x", pady=(0, 26))
+        self.connection = label(row, "", size=12, color=MUTED)
+        self.connection.pack(side="left", fill="x", expand=True)
+        icon = tk.Canvas(row, width=48, height=48, bg=PANEL, highlightthickness=0)
+        icon.pack(side="right")
+        icon.create_arc(7, 7, 40, 40, start=20, extent=145, style="arc", outline=CYAN, width=3)
+        icon.create_arc(7, 7, 40, 40, start=200, extent=145, style="arc", outline=CYAN, width=3)
+        icon.create_line(33, 10, 40, 16, 42, 7, fill=CYAN, width=3)
+        icon.create_line(14, 38, 7, 32, 5, 41, fill=CYAN, width=3)
+        self.firmware_state = label(main.body, "", size=23, bold=True, wraplength=600)
+        self.firmware_state.pack(fill="x", pady=(0, 24))
+        self.update_btn = self.button(main.body, "Get the latest update", self.online_action,
+                                      color=ORANGE, height=66, size=16)
+        self.update_btn.pack(fill="x", pady=(0, 22))
+        self.update_hint = label(main.body, "", size=11, color=MUTED, wraplength=600)
+        self.update_hint.pack(fill="x", pady=(0, 5))
+        main.body.bind("<Configure>", lambda e: [widget.configure(wraplength=max(200, e.width-4))
+                       for widget in (self.firmware_state, self.update_hint)])
+
+    def _build_options(self, parent):
+        label(parent, "More options", size=24, color=LIME, bold=True).pack(fill="x", pady=(0, 20))
+        device = Card(parent)
+        device.pack(fill="x", padx=(0, 3), pady=(0, 14))
+        label(device.body, "Device connection", bold=True, size=13).pack(fill="x", pady=(0, 8))
+        label(device.body, "Devices are detected automatically. Select yours here if needed.",
+              color=MUTED, size=10, wraplength=580).pack(fill="x", pady=(0, 8))
+        self.drive_combo = ttk.Combobox(device.body, textvariable=self.drive_var, width=24)
+        self.drive_combo.pack(fill="x")
+        self.button(device.body, "Connection help", self.connection_help, height=34).pack(anchor="w", pady=(8, 0))
+        manual = Card(parent)
+        manual.pack(fill="x", padx=(0, 3), pady=(0, 14))
+        label(manual.body, "Install from a file", bold=True, size=13).pack(fill="x")
+        self.file_state = label(manual.body, "Choose app.bin.enc with its matching app.ver beside it.",
+                                color=MUTED, size=10, wraplength=580)
+        self.file_state.pack(fill="x", pady=8)
+        actions = tk.Frame(manual.body, bg=PANEL)
+        actions.pack(fill="x")
+        self.browse_update = self.button(actions, "Choose update file…", self.choose_package, width=200, height=38)
+        self.browse_update.pack(side="left")
+        self.manual_update_btn = self.button(actions, "Install selected file", lambda: self.update_device("file"),
+                                             width=200, height=38)
+        self.manual_update_btn.pack(side="right")
         app = Card(parent, padding=12)
-        app.pack(fill="x", pady=(12, 0), padx=(0, 3))
+        app.pack(fill="x", pady=(0, 14), padx=(0, 3))
         details = tk.Frame(app.body, bg=PANEL)
         details.pack(side="left", fill="x", expand=True)
-        label(details, f"Windows app • {APP_VERSION}", bold=True, size=12).pack(fill="x")
-        self.app_state = label(details, "", color=MUTED, size=10, wraplength=420)
+        running_label = "Windows app" if digidice_update.is_frozen() else "Python source"
+        label(details, f"{running_label} • {APP_VERSION}", bold=True, size=12).pack(fill="x")
+        self.app_state = label(details, "", color=MUTED, size=10, wraplength=330)
         self.app_state.pack(fill="x", pady=(3, 0))
         self.app_update_btn = self.button(app.body, "Update & restart", self.update_app, color=PURPLE, width=182, height=44)
         self.app_update_btn.pack(side="right", padx=(12, 0))
+        self.log_toggle = Button(parent, "⌄   Activity log", self.toggle_log, width=170, height=36)
+        self.log_toggle.pack(anchor="w")
+        self.log_frame = tk.Frame(parent, bg=BG)
+        self.log_text = tk.Text(self.log_frame, bg=PANEL, fg=MUTED, height=6,
+                                wrap="word", state="disabled", relief="flat", font=("Consolas", 9))
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        Button(parent, "Support & details", self.support, width=170, height=36).pack(anchor="w", pady=10)
 
     def _build_tokens(self, parent):
         label(parent, "Upload tokens", size=23, color=LIME, bold=True).pack(fill="x", pady=(0, 3))
-        self.token_steps = Steps(parent, [("Add images", "Choose your tokens"), ("Upload", "Review and upload")])
-        self.token_steps.pack(fill="x", pady=(0, 10))
+        self.token_connection = label(parent, "", color=MUTED, size=11)
+        self.token_connection.pack(fill="x", pady=(8, 20))
         card = Card(parent)
         card.pack(fill="x", padx=(0, 3))
         self.drop = tk.Frame(card.body, bg=PANEL, highlightthickness=1, highlightbackground=MUTED, pady=18)
@@ -305,20 +324,13 @@ class App:
 
     def show_screen(self, index):
         self.screens.show(index)
-        self.nav_updates.set_color(ORANGE if index == 0 else "#402712")
-        self.nav_tokens.set_color(BLUE if index == 1 else "#183048")
-        self.root.title(APP_TITLE + (" — Updates" if index == 0 else " — Tokens"))
+        for i, button in enumerate((self.nav_updates, self.nav_tokens, self.nav_options)):
+            button.set_selected(index == i)
+        self.root.title(APP_TITLE + " — " + ("Updates", "Tokens", "More options")[index])
 
     def _wheel(self, event):
         if self.screens.active is not None and event.widget is not self.log_text:
             self.screens.pages[self.screens.active].scroll(-int(event.delta/120))
-
-    def select_source(self, source):
-        if self.busy:
-            return
-        self.source = source
-        self.completed_drive = None
-        self.sync()
 
     def resolve_drive(self):
         raw = self.drive_var.get().strip()
@@ -328,22 +340,84 @@ class App:
         return root if root and os.path.isdir(root) else None
 
     def refresh_drives(self):
-        if self.busy:
+        if self.busy or self.closed or self._scan_running:
+            return
+        self._scan_running = True
+        def work():
+            try:
+                drives = digidice_drive.list_removable_drives()
+            except Exception as exc:
+                self.post(self._drives_found, None, str(exc))
+            else:
+                self.post(self._drives_found, drives, "")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _drives_found(self, drives, error=""):
+        self._scan_running = False
+        if self.busy or self.closed:
+            return
+        if error:
+            self.log(f"Device detection: {error}")
             return
         old = self.resolve_drive()
-        def done(drives):
-            self.drive_map = {f"{d.label or 'Drive'} • {d.letter}": d.letter for d in drives}
-            self.drive_combo.configure(values=list(self.drive_map))
-            selected = next((name for name, root in self.drive_map.items() if root == old), None)
-            likely = [d for d in drives if d.is_likely_digidice]
-            if selected:
-                self.drive_var.set(selected)
-            elif old:
-                self.drive_var.set(old)
-            elif len(likely) == 1:
-                self.drive_var.set(next(name for name, root in self.drive_map.items() if root == likely[0].letter))
-            self.set_status("Choose your DigiDice drive to continue." if not self.resolve_drive() else "DigiDice drive ready.")
-        self.run_job("Finding your DigiDice…", digidice_drive.list_removable_drives, done)
+        previous = self.drive_map
+        self.drive_map = {f"{d.label or 'Drive'} • {d.letter}": d.letter for d in drives}
+        self.drive_combo.configure(values=list(self.drive_map))
+        selected = next((name for name, root in self.drive_map.items() if root == old), None)
+        likely = [d for d in drives if d.is_likely_digidice]
+        if selected:
+            selection = selected
+        elif old and old not in previous.values():
+            selection = old  # Preserve an explicitly entered custom path.
+        elif len(likely) == 1:
+            selection = next(name for name, root in self.drive_map.items() if root == likely[0].letter)
+        else:
+            selection = ""  # Never guess between cards, or choose an unrelated USB drive.
+        if self.drive_var.get() != selection:
+            self.drive_var.set(selection)
+        self.sync()
+
+    def _poll_drives(self):
+        self._poll_id = None
+        if not self.closed:
+            self.refresh_drives()
+            self._poll_id = self.root.after(2000, self._poll_drives)
+
+    def online_state(self):
+        """One button owns the online check, connection wait, and installation."""
+        ready = self.resolve_drive()
+        hint = "After updating, eject and restart your DigiDice."
+        if self.online_busy:
+            title = "Checking for updates…" if self.online_busy == "check" else "Updating your DigiDice…"
+            return title, title, "Please keep your DigiDice connected." if self.online_busy == "install" else "Looking for the latest release online.", "wait"
+        if self.online_error:
+            return "Try again", "Couldn't finish the update", self.online_error, "check"
+        if ready and self.completed_drive == ready:
+            return "Update copied!", "Ready to restart", hint, "check"
+        if not self.host:
+            return "Online updates unavailable", "Use a local update file", "Open More options to install an update file.", "unavailable"
+        if not self.checked:
+            return "Get the latest update", "Ready when you are", "Check online for the latest DigiDice update.", "check"
+        if not self.fw_release:
+            return "Check again", "No update published yet", "You can check again later.", "check"
+        if not ready:
+            return "Please Connect DigiDice!", "Update available", f"Connect with USB and open {UPDATE_PATH} on your DigiDice.", "connect"
+        on_card = digidice_package.card_version(ready)
+        if self.remote_token and on_card == self.remote_token:
+            return "Check again", "DigiDice is up to date", "The latest update is already on the card.", "check"
+        return "Update DigiDice Now!", "Update available", hint, "install"
+
+    def online_action(self):
+        if self.busy:
+            return
+        action = self.online_state()[3]
+        if action == "install":
+            self.update_device("online")
+        elif action == "connect":
+            self.refresh_drives()
+            self.connection_help()
+        elif action == "check":
+            self.check_updates()
 
     def _schedule_drive_changed(self, *_):
         if self._drive_job:
@@ -359,43 +433,54 @@ class App:
         if self.closed:
             return
         ready = self.resolve_drive()
-        self.connection.configure(text="●  Connected" if ready else "●  Select drive", fg=LIME if ready else MUTED)
+        connection = "●  DigiDice connected" if ready else "○  DigiDice not connected"
+        for widget in (self.connection, self.token_connection):
+            widget.configure(text=connection, fg=LIME if ready else MUTED)
         for button in self._buttons:
             button.set_enabled(not self.busy)
         self.drive_combo.configure(state="disabled" if self.busy else "normal")
-        self.online_select.set_color("#49280e" if self.source == "online" else PANEL)
-        self.file_select.set_color("#133956" if self.source == "file" else PANEL)
-        self.online_select.set_text(("●" if self.source == "online" else "○") + "  Get latest update (online)")
-        self.file_select.set_text(("●" if self.source == "file" else "○") + "  Use a file")
-        self.online_card.set_border(ORANGE if self.source == "online" else BORDER)
-        self.file_card.set_border(CYAN if self.source == "file" else BORDER)
-        self.check_btn.set_enabled(not self.busy and bool(self.host))
-        self.notes_btn.set_enabled(not self.busy and bool(self.fw_release or self.app_release))
-        has_update = self.package if self.source == "file" else self.fw_release
-        self.update_btn.set_enabled(not self.busy and bool(ready and has_update))
-        self.app_update_btn.set_enabled(not self.busy and bool(self.app_release) and digidice_update.is_newer(self.app_release.version, APP_VERSION))
+        caption, title, hint, action = self.online_state()
+        self.update_btn.set_text(caption)
+        self.update_btn.set_enabled(not self.busy and action not in ("wait", "unavailable"))
+        self.firmware_state.configure(text=title, fg=TEXT)
+        self.update_hint.configure(text=hint, fg=MUTED)
+        self.manual_update_btn.set_enabled(not self.busy and bool(ready and self.package))
+        self.app_update_btn.set_enabled(
+            not self.busy and digidice_update.is_frozen() and bool(self.app_release)
+            and digidice_update.is_newer(self.app_release.version, APP_VERSION))
         self.upload_btn.set_enabled(not self.busy and bool(ready and self.pending))
         self.clear_btn.set_enabled(not self.busy and bool(self.pending))
         count = len(self.pending)
         self.upload_btn.set_text(f"↑   Upload {count} token{'s' if count != 1 else ''}" if count else "↑   Upload tokens")
         self.queue_label.configure(text=f"{count} image{'s' if count != 1 else ''} ready" if count else "No images selected")
-        self.token_steps.set_step(1 if count else 0)
-        self.update_steps.set_step(2 if ready and self.completed_drive == ready else 1 if ready else 0)
+        app_color = MUTED
         if not self.host:
-            fw_text, app_text = "Online updates aren't available yet.\nUse an update file instead.", "Online updates aren't available yet."
+            app_text = "Online updates aren't available yet."
         elif not self.checked:
-            fw_text, app_text = "Not checked yet", "Not checked yet — use Check for updates above."
+            app_text = "Use Get the latest update on the Updates screen to check."
         else:
-            fw_text = "No device update is published yet."
-            if self.fw_release:
-                on_card = digidice_package.card_version(ready) if ready else None
-                same = bool(self.remote_token and on_card == self.remote_token)
-                fw_text = ("This update is already on the card." if same else "Update available") + f"\nVersion {self.fw_release.version}"
             app_text = "No Windows app update is published yet."
             if self.app_release:
                 app_text = f"Version {self.app_release.version} available" if digidice_update.is_newer(self.app_release.version, APP_VERSION) else "You're up to date."
-        self.firmware_state.configure(text=fw_text, fg=LIME if self.checked and self.fw_release else MUTED)
-        self.app_state.configure(text=app_text, fg=LIME if self.checked and self.app_release else MUTED)
+                app_color = LIME
+            if not digidice_update.is_frozen():
+                if self.source_check_error:
+                    app_text = "Source version couldn't be checked.\nSee the activity log."
+                elif self.source_status:
+                    status = self.source_status
+                    if status.relation == "diverged":
+                        app_text = f"Newer public source available • {status.ahead_by} commit{'s' if status.ahead_by != 1 else ''}\nThis checkout also has local commits."
+                        app_color = ORANGE
+                    elif status.update_available:
+                        app_text = f"Newer source available • {status.ahead_by} commit{'s' if status.ahead_by != 1 else ''}"
+                        app_color = ORANGE
+                    elif status.relation == "behind":
+                        app_text = "This source checkout is ahead of the public repository."
+                        app_color = LIME
+                    else:
+                        app_text = "Source checkout is up to date."
+                        app_color = LIME
+        self.app_state.configure(text=app_text, fg=app_color)
 
     def set_status(self, text, error=False):
         self.status.configure(text=text, fg="#ff9a9a" if error else MUTED)
@@ -444,8 +529,12 @@ class App:
         self.progress.stop()
         self.progress.pack_forget()
         self.busy = False
+        online_job = self.online_busy
+        self.online_busy = ""
         try:
             if error:
+                if online_job:
+                    self.online_error = "Please check your connection and try again. Details are in More options → Activity log."
                 self.log(f"ERROR: {error}")
                 self.set_status("That didn't finish. Check the activity log for details, then try again.", error=True)
                 if not self.log_open:
@@ -480,14 +569,13 @@ class App:
             return
         self.package = None
         self.package_path = ""
-        self.source = "file"
         self.completed_drive = None
         self.file_state.configure(text="Checking update file…", fg=MUTED)
         def done(pkg):
             self.package, self.package_path = pkg, path
             self.file_state.configure(text=f"Ready: {Path(path).name}", fg=LIME)
             self.log(f"Loaded {path}; version {pkg.ver_token}; {pkg.orig_size:,} bytes.")
-            self.set_status("Update file ready. Select your drive, then choose Update DigiDice.")
+            self.set_status("Update file ready. Choose Install selected file in More options.")
         def work():
             try:
                 return digidice_package.load(path)
@@ -500,34 +588,52 @@ class App:
         if self.busy or not self.host:
             return
         self.app_release = self.fw_release = self.remote_token = None
+        self.source_status = None
+        self.source_check_error = ""
         self.checked = False
+        self.completed_drive = None
+        self.online_error = ""
+        self.online_busy = "check"
         def work():
             app, firmware = digidice_update.fetch_manifest()
             token = None
             if firmware:
+                token = digidice_update.fetch_firmware_token(firmware)
+            source_status = None
+            source_error = ""
+            if not digidice_update.is_frozen():
                 try:
-                    token = digidice_update.fetch_firmware_token(firmware)
-                except Exception as exc:
-                    self.post(self.log, f"Could not compare the card version: {exc}")
-            return app, firmware, token
+                    source_status = digidice_update.fetch_source_status()
+                except digidice_update.UpdateError as exc:
+                    source_error = str(exc)
+            return app, firmware, token, source_status, source_error
         def done(result):
-            self.app_release, self.fw_release, self.remote_token = result
+            (self.app_release, self.fw_release, self.remote_token,
+             self.source_status, self.source_check_error) = result
             self.checked = True
+            if self.source_status:
+                status = self.source_status
+                self.log(
+                    f"Source check: {status.local_revision[:8]} → "
+                    f"{status.remote_revision[:8]} ({status.relation}; "
+                    f"public +{status.ahead_by}, local +{status.behind_by}).")
+            elif self.source_check_error:
+                self.log(f"Source check unavailable: {self.source_check_error}")
             self.set_status("Update check complete.")
             self.log("Update check complete.")
         self.run_job("Checking device and Windows app updates…", work, done)
 
-    def update_device(self):
+    def update_device(self, source="online"):
         if self.busy:
             return
         drive = self.resolve_drive()
         if not drive:
             self.connection_help()
             return
-        if self.source == "file" and self.package:
+        if source == "file" and self.package:
             pkg = self.package
             token = pkg.ver_token
-        elif self.source == "online" and self.fw_release:
+        elif source == "online" and self.fw_release:
             pkg = None
             token = self.remote_token
         else:
@@ -537,6 +643,9 @@ class App:
                 return
         release = self.fw_release
         self.completed_drive = None
+        self.online_error = ""
+        if source == "online":
+            self.online_busy = "install"
         def work():
             package = pkg
             if package is None:
@@ -658,7 +767,7 @@ class App:
     def toggle_log(self):
         self.log_open = not self.log_open
         if self.log_open:
-            self.log_frame.pack(side="bottom", fill="x", before=self.status_frame, pady=(8, 0))
+            self.log_frame.pack(fill="x", after=self.log_toggle, pady=(8, 0))
         else:
             self.log_frame.pack_forget()
         self.log_toggle.set_text(("⌃" if self.log_open else "⌄") + "   Activity log")
@@ -680,28 +789,21 @@ class App:
         window.grab_set()
 
     def connection_help(self):
-        self.dialog("Connect your DigiDice", f"1. Connect your DigiDice to this computer with a USB data cable.\n\n2. On the DigiDice, open {UPDATE_PATH}. This makes its SD card appear as a Windows drive.\n\n3. Click Refresh here and choose the DigiDice drive. You can also type its drive letter, such as D:.\n\nAfter an update: eject the drive in Windows, then restart the DigiDice to install it.")
-
-    def show_changes(self):
-        parts = []
-        for name, release in (("DigiDice device", self.fw_release), ("Windows app", self.app_release)):
-            if release:
-                parts.append(f"{name} • {release.version}\n{release.notes or 'No release notes were provided.'}")
-        self.dialog("What's new", "\n\n".join(parts) or "Check for updates first.")
+        self.dialog("Connect your DigiDice", f"Connect your DigiDice with a USB data cable.\n\nOn the DigiDice, open {UPDATE_PATH}. This makes its SD card appear as a Windows drive.\n\nThe app checks for connected devices automatically. If more than one card is found, choose your DigiDice drive under More options.\n\nAfter an update: eject the drive in Windows, then restart the DigiDice to install it.")
 
     def support(self):
         try:
             host = digidice_update.base_url() or "Not configured"
         except digidice_update.UpdateError as exc:
             host = str(exc)
-        self.dialog("Support & details", f"DigiDice Updater {APP_VERSION}\n\nUpdate source: {host}\n\nOnline updates need a release source supplied by DigiDice. Until it is available, use an update file provided for your device.\n\nManual update files: app.bin.enc and its matching app.ver must be in the same folder.\n\nToken images: resized and center-cropped to {digidice_image.TOKEN_W} × {digidice_image.TOKEN_H}, then saved as JPEG files in the Tokens folder. Uploading a matching filename replaces that token.\n\nDrag and drop: {'available' if HAS_DND else 'unavailable; use Browse images'}\nAnimations follow the Windows Animation effects setting.\nKeyboard: Tab to navigate, Space or Enter to activate, Ctrl+1 / Ctrl+2 to switch screens.\n\nFor troubleshooting, expand Activity log below the main screen. Existing update_source.json and DIGIDICE_UPDATE_URL configuration are supported.")
+        self.dialog("Support & details", f"DigiDice Updater {APP_VERSION}\n\nUpdate source: {host}\n\nOn Updates, Get the latest update checks online immediately. The same orange button then installs the update once your DigiDice is connected.\n\nManual update files: app.bin.enc and its matching app.ver must be in the same folder. Use Install from a file in More options.\n\nToken images: resized and center-cropped to {digidice_image.TOKEN_W} × {digidice_image.TOKEN_H}, then saved as JPEG files in the Tokens folder. Uploading a matching filename replaces that token.\n\nDrag and drop: {'available' if HAS_DND else 'unavailable; use Browse images'}\nAnimations follow the Windows Animation effects setting.\nKeyboard: Tab to navigate, Space or Enter to activate, Ctrl+1 / Ctrl+2 to switch screens.\n\nFor troubleshooting, open More options → Activity log. Existing update_source.json and DIGIDICE_UPDATE_URL configuration are supported.")
 
     def close(self):
         if self.busy:
             messagebox.showinfo(APP_TITLE, "Please wait for the current operation to finish before closing.", parent=self.root)
             return
         self.closed = True
-        for job in (self._pump_id, self._drive_job):
+        for job in (self._pump_id, self._drive_job, self._poll_id):
             if job:
                 self.root.after_cancel(job)
         self.screens.destroy()

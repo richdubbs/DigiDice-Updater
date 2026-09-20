@@ -14,7 +14,7 @@ TEXT = "#f1f6fc"
 MUTED = "#a9bdd0"
 LIME = "#87f647"
 CYAN = "#4bd6ff"
-ORANGE = "#ed6207"
+ORANGE = "#ff7000"
 BLUE = "#075bfa"
 PURPLE = "#7021b9"
 RED = "#c52230"
@@ -79,11 +79,13 @@ class Button(tk.Canvas):
     never delays a command. A new state cancels the previous visual tween.
     """
     def __init__(self, parent, text, command=None, color=PANEL, height=42,
-                 width=160, size=11, enabled=True, **kwargs):
+                 width=160, size=11, enabled=True, navigation=False, **kwargs):
         super().__init__(parent, bg=parent.cget("bg"), height=height, width=width,
                          highlightthickness=0, takefocus=True, **kwargs)
         self.text, self.command, self.color = text, command, color
         self.size, self.enabled = size, enabled
+        self.navigation = navigation
+        self.selected = False
         self._font = tkfont.Font(self, family="Segoe UI", size=size, weight="bold")
         self.hover = self.pressed = self.focused = False
         self._job = None
@@ -120,14 +122,20 @@ class Button(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         inset = 2 if self.pressed else 0
         edge = CYAN if self.focused else (blend(self.color, "#ffffff", .4) if self.hover else BORDER)
-        rounded(self, 1+inset, 1+inset, max(1, w-3-2*inset), max(1, h-3-2*inset),
-                fill=self._fill, outline=edge, width=2 if self.focused else 1)
+        if self.navigation:
+            self.create_rectangle(0, 0, w, h, fill=self._fill,
+                                  outline=CYAN if self.focused else self._fill)
+            if self.selected:
+                self.create_rectangle(0, 0, 4, h, fill=ORANGE, outline=ORANGE)
+        else:
+            rounded(self, 1+inset, 1+inset, max(1, w-3-2*inset), max(1, h-3-2*inset),
+                    fill=self._fill, outline=edge, width=2 if self.focused else 1)
         ink = TEXT if self.enabled else "#7890a3"
         y = h/2 + (1 if self.pressed else 0)
         icon = self.text[0] if self.text.startswith(("↑", "▧")) else None
         caption = self.text[1:].strip() if icon else self.text
         if icon:
-            x = (w-self._font.measure(caption)-36)/2
+            x = 22 if self.navigation else (w-self._font.measure(caption)-36)/2
             if icon == "↑":
                 self.create_line(x+4, y+4, x+4, y+10, x+24, y+10, x+24, y+4, fill=ink, width=2)
                 self.create_line(x+14, y+5, x+14, y-11, fill=ink, width=2)
@@ -138,7 +146,8 @@ class Button(tk.Canvas):
                 self.create_oval(x+18, y-7, x+21, y-4, fill=ink, outline=ink)
             self.create_text(x+36, y, text=caption, anchor="w", fill=ink, font=self._font)
         else:
-            self.create_text(w/2, y, text=caption, fill=ink, font=self._font)
+            self.create_text(26 if self.navigation else w/2, y, text=caption,
+                             anchor="w" if self.navigation else "center", fill=ink, font=self._font)
 
     def _animate(self, immediate=False):
         if self._job:
@@ -213,6 +222,10 @@ class Button(tk.Canvas):
     def set_color(self, color):
         self.color = color
         self._animate()
+
+    def set_selected(self, selected):
+        self.selected = selected
+        self.set_color("#192e3e" if selected else PANEL)
 
 
 class Card(tk.Canvas):
@@ -311,26 +324,3 @@ class Screens(tk.Frame):
         if self._job:
             self.after_cancel(self._job)
         super().destroy()
-
-
-class Steps(tk.Canvas):
-    def __init__(self, parent, titles):
-        super().__init__(parent, bg=parent.cget("bg"), height=60, highlightthickness=0)
-        self.titles, self.active = titles, 0
-        self.bind("<Configure>", lambda e: self.draw())
-
-    def set_step(self, active):
-        self.active = active
-        self.draw()
-
-    def draw(self):
-        self.delete("all")
-        spacing = max(1, self.winfo_width()) / len(self.titles)
-        for i, (title, subtitle) in enumerate(self.titles):
-            x = spacing*i + 3
-            fill = "#36bb41" if i < self.active else ORANGE if i == self.active else BG
-            self.create_oval(x, 12, x+36, 48, fill=fill, outline=MUTED if i > self.active else fill, width=2)
-            self.create_text(x+18, 30, text="✓" if i < self.active else str(i+1),
-                             fill=TEXT, font=("Segoe UI", 15, "bold"))
-            self.create_text(x+47, 23, text=title, anchor="w", fill=TEXT, font=("Segoe UI", 10, "bold"))
-            self.create_text(x+47, 43, text=subtitle, anchor="w", fill=MUTED, font=("Segoe UI", 9))

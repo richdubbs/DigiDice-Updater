@@ -5,5 +5,5 @@ tkinterdnd2>=0.3.0
 # The app itself does no encryption and holds no key -- see digidice_package.py.
 
 # Build-only. Not needed to run the app -- install it when you want to package
-# an .exe (see build_instructions.md):
+# an .exe:
 #   pip install pyinstaller
