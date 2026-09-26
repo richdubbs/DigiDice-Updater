@@ -349,6 +349,45 @@ class GuidedUITests(unittest.TestCase):
         self.assertEqual(a.update_btn.text, "Try again")
         self.assertTrue(a.update_btn.enabled)
 
+    def test_online_install_refuses_a_pair_that_changed_while_downloading(self):
+        enc, token = self.package()
+        a = self.app
+        a.host = "https://example.test"
+        a.checked = True
+        a.fw_release = digidice_update.Release("2.0", "https://example.test/app.bin.enc",
+                                               ver_url="https://example.test/app.ver")
+        a.remote_token = "b"*32   # what the check saw; the download brings back `token`
+        a.sync()
+        def download(url, destination, **kwargs):
+            data = enc.read_bytes() if url.endswith(".enc") else (token+"\n").encode()
+            Path(destination).write_bytes(data)
+            return destination
+        with patch.object(digidice_update, "cache_dir", return_value=str(self.base)), \
+                patch.object(digidice_update, "download", side_effect=download):
+            a.update_btn.invoke()
+            self.drain()
+        self.assertFalse((self.drive / "app.bin.enc").exists())
+        self.assertFalse((self.drive / "app.ver").exists())
+        self.assertEqual(a.update_btn.text, "Try again")
+        self.assertIn("changed on the server", "\n".join(a.log_lines))
+
+    def test_manifest_token_pins_the_published_app_ver(self):
+        manifest = "https://example.test/version.json"
+        release = digidice_update._release_from(
+            {"version": "2.0", "url": "app.bin.enc", "token": "A"*32}, manifest, "firmware")
+        self.assertEqual(release.token, "a"*32)
+        self.assertEqual(release.ver_url, "https://example.test/app.ver")
+        with patch.object(digidice_update, "_get", return_value=("a"*32 + "\n").encode()):
+            self.assertEqual(digidice_update.fetch_firmware_token(release), "a"*32)
+        with patch.object(digidice_update, "_get", return_value=("b"*32 + "\n").encode()), \
+                self.assertRaises(digidice_update.UpdateError):
+            digidice_update.fetch_firmware_token(release)
+        with self.assertRaises(digidice_update.UpdateError):
+            digidice_update._release_from({"version": "2.0", "url": "x", "token": "nope"}, manifest, "firmware")
+        # Manifests published before the token existed still work.
+        old = digidice_update._release_from({"version": "2.0", "url": "app.bin.enc"}, manifest, "firmware")
+        self.assertIsNone(old.token)
+
     def test_sidebar_hides_secondary_controls_and_removes_step_sections(self):
         a = self.app
         a.show_screen(0)

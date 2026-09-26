@@ -55,6 +55,7 @@ SOURCE_COMPARE_URL = "https://api.github.com/repos/richdubbs/DigiDice-Updater/co
 
 CONFIG_NAME = "update_source.json"
 USER_AGENT = "DigiDiceUpdater"
+_TOKEN_RE = re.compile(r"[0-9a-f]{32}")   # app.ver: the MD5 of the plain .bin
 HTTP_TIMEOUT = 30       # seconds; a stalled socket must not hang the worker
 CHUNK = 64 * 1024
 
@@ -76,6 +77,10 @@ class Release:
     # firmware only: where app.ver lives. Defaults to app.ver alongside the
     # image, which is how encrypt_app.py emits the pair.
     ver_url: str = ""
+    # firmware only: app.ver's contents, as published with this manifest. It
+    # ties app.ver to the same release as the sha256 ties app.bin.enc, since
+    # the two files are fetched in separate requests (see fetch_firmware_token).
+    token: Optional[str] = None
 
 
 @dataclass
@@ -180,7 +185,11 @@ def _release_from(section: dict, manifest_url: str, name: str) -> Release:
     for field in ("version", "url"):
         if not str(section.get(field, "")).strip():
             raise UpdateError(f"{MANIFEST_NAME}: \"{name}\" is missing \"{field}\".")
+    token = str(section.get("token", "")).strip().lower() or None
+    if token and not _TOKEN_RE.fullmatch(token):
+        raise UpdateError(f"{MANIFEST_NAME}: \"{name}\" has a malformed \"token\".")
     return Release(
+        token=token,
         version=str(section["version"]).strip(),
         # Relative urls are resolved against the manifest, so a host can be
         # moved or mirrored without rewriting every entry inside it.
@@ -272,11 +281,27 @@ def fetch_source_status() -> SourceStatus:
 ProgressFn = Callable[[int, Optional[int]], None]   # (bytes so far, total or None)
 
 
-def fetch_firmware_token(release: Release) -> str:
-    """Compare the card with app.ver, not the encrypted download's MD5."""
-    token = _get(release.ver_url).decode("ascii").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{32}", token):
+def parse_firmware_token(data: bytes) -> str:
+    """app.ver's contents as a version token, or UpdateError."""
+    token = data.decode("ascii", errors="replace").strip().lower()
+    if not _TOKEN_RE.fullmatch(token):
         raise UpdateError("The published app.ver is not a valid firmware version token.")
+    return token
+
+
+def fetch_firmware_token(release: Release) -> str:
+    """Compare the card with app.ver, not the encrypted download's MD5.
+
+    app.ver comes from ".../latest/download/", like everything else, in a
+    request of its own. If a new release is published between that request and
+    the manifest's, the two describe different releases, and a pair copied on
+    that basis is one the device will refuse. The token in version.json, when
+    the host publishes one, is what catches it."""
+    token = parse_firmware_token(_get(release.ver_url))
+    if release.token and token != release.token:
+        raise UpdateError(
+            "The published app.ver does not belong to the release in "
+            f"{MANIFEST_NAME}; a new release may be going up. Try again in a minute.")
     return token
 
 

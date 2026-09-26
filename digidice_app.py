@@ -28,8 +28,9 @@ except ImportError:
     HAS_DND = False
 
 APP_TITLE = "DigiDice Updater"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 UPDATE_PATH = "MENU > SETTINGS > UPDATE"
+UPDATE_STEPS = f"open {UPDATE_PATH} and tap RESTART"   # the device asks before rebooting
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
 FINISH_TEXT = "Copied successfully. Eject the drive in Windows, then restart your DigiDice."
 
@@ -403,7 +404,7 @@ class App:
         if not self.fw_release:
             return "Check again", "No update published yet", "You can check again later.", "check"
         if not ready:
-            return "Please Connect DigiDice!", "Update available", f"Connect with USB and open {UPDATE_PATH} on your DigiDice.", "connect"
+            return "Please Connect DigiDice!", "Update available", f"Connect with USB, then {UPDATE_STEPS} on your DigiDice.", "connect"
         on_card = digidice_package.card_version(ready)
         if self.remote_token and on_card == self.remote_token:
             return "Check again", "DigiDice is up to date", "The latest update is already on the card.", "check"
@@ -658,6 +659,14 @@ class App:
                 self.post(self.set_status, "Checking downloaded update…")
                 digidice_update.download(release.ver_url, ver)
                 package = digidice_package.load(enc, ver)
+                # The sha256 ties app.bin.enc to the release that was checked;
+                # this ties app.ver to it. Fetched separately, they straddle a
+                # release published in between, and the device refuses a
+                # pair whose halves come from different builds.
+                if token and package.ver_token != token:
+                    raise digidice_update.UpdateError(
+                        "The update changed on the server while it was downloading. "
+                        "Nothing was copied; check for updates again.")
             self.report(0, None, "Copying update to your DigiDice. Keep it connected…")
             digidice_package.write_to_drive(package, drive)
             return package.ver_token
@@ -791,7 +800,7 @@ class App:
         window.grab_set()
 
     def connection_help(self):
-        self.dialog("Connect your DigiDice", f"Connect your DigiDice with a USB data cable.\n\nOn the DigiDice, open {UPDATE_PATH}. This makes its SD card appear as a Windows drive.\n\nThe app checks for connected devices automatically. If more than one card is found, choose your DigiDice drive under More options.\n\nAfter an update: eject the drive in Windows, then restart the DigiDice to install it.")
+        self.dialog("Connect your DigiDice", f"Connect your DigiDice with a USB data cable.\n\nOn the DigiDice, {UPDATE_STEPS}. This makes its SD card appear as a Windows drive.\n\nThe app checks for connected devices automatically. If more than one card is found, choose your DigiDice drive under More options.\n\nAfter an update: eject the drive in Windows, then restart the DigiDice to install it.")
 
     def support(self):
         try:
