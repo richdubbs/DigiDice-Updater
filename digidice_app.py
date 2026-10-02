@@ -28,7 +28,7 @@ except ImportError:
     HAS_DND = False
 
 APP_TITLE = "DigiDice Updater"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 UPDATE_PATH = "MENU > SETTINGS > UPDATE"
 UPDATE_STEPS = f"open {UPDATE_PATH} and tap RESTART"   # the device asks before rebooting
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
