@@ -19,7 +19,7 @@ import digidice_image
 import digidice_package
 import digidice_update
 from digidice_ui import (BG, PANEL, BORDER, TEXT, MUTED, LIME, CYAN, ORANGE,
-                         BLUE, PURPLE, RED, Button, Card, Screens, label, theme)
+                         BLUE, PURPLE, RED, Button, Screens, Smoke, StatusBar, label, theme)
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -28,10 +28,12 @@ except ImportError:
     HAS_DND = False
 
 APP_TITLE = "DigiDice Updater"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 UPDATE_PATH = "MENU > SETTINGS > UPDATE"
 UPDATE_STEPS = f"open {UPDATE_PATH} and tap RESTART"   # the device asks before rebooting
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
+PREVIEW_SIZE = (90, 124)  # largest token thumbnail on the Tokens screen
+PREVIEW_PLACEHOLDER = "Your selected images will appear here,\ncropped as they will be on your device."
 FINISH_TEXT = "Copied successfully. Eject the drive in Windows, then restart your DigiDice."
 
 
@@ -55,7 +57,7 @@ def prepare_images(paths, existing):
                 raise ValueError("not a supported image")
             with Image.open(path) as source:
                 preview = digidice_image.resize_token(source)
-                preview.thumbnail((108, 150), Image.Resampling.LANCZOS)
+                preview.thumbnail(PREVIEW_SIZE, Image.Resampling.LANCZOS)
             added.append(TokenImage(path, preview))
             seen.add(key)
         except Exception as exc:
@@ -100,8 +102,8 @@ class App:
         self.root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
         self.root.title(APP_TITLE)
         theme(self.root)
-        self.root.geometry(f"1060x{min(720, self.root.winfo_screenheight()-100)}")
-        self.root.minsize(900, 600)
+        self.root.geometry(f"760x{min(440, self.root.winfo_screenheight()-100)}")
+        self.root.minsize(700, 420)
         self.events = queue.SimpleQueue()
         self.busy = self.closed = False
         self._pump_id = self._drive_job = None
@@ -149,39 +151,38 @@ class App:
         return button
 
     def _build(self):
-        sidebar = tk.Frame(self.root, bg=PANEL, width=208)
+        sidebar = tk.Frame(self.root, bg=PANEL, width=168)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         tk.Frame(self.root, bg=BORDER, width=1).pack(side="left", fill="y")
-        brand = tk.Frame(sidebar, bg="#000000", height=52)
+        brand = tk.Frame(sidebar, bg="#000000", height=44)
         brand.pack(fill="x")
         brand.pack_propagate(False)
         self._logo(brand)
         self.nav_updates = Button(sidebar, "↑   Updates", lambda: self.show_screen(0),
-                                  navigation=True, height=60, size=13)
-        self.nav_updates.pack(fill="x")
+                                  navigation=True, height=44, size=11)
+        self.nav_updates.pack(fill="x", pady=(4, 0))
         self.nav_tokens = Button(sidebar, "▧   Tokens", lambda: self.show_screen(1),
-                                 navigation=True, height=60, size=13)
-        self.nav_tokens.pack(fill="x", pady=(6, 0))
+                                 navigation=True, height=44, size=11)
+        self.nav_tokens.pack(fill="x")
         self.nav_options = Button(sidebar, "More options", lambda: self.show_screen(2),
-                                  navigation=True, height=56, size=11)
-        self.nav_options.pack(side="bottom", fill="x", pady=(0, 20))
-        tk.Frame(sidebar, bg=BORDER, height=1).pack(side="bottom", fill="x", padx=22, pady=10)
+                                  navigation=True, height=40, size=10)
+        self.nav_options.pack(side="bottom", fill="x", pady=(0, 10))
+        tk.Frame(sidebar, bg=BORDER, height=1).pack(side="bottom", fill="x", padx=18, pady=6)
         shell = tk.Frame(self.root, bg=BG)
-        shell.pack(side="left", fill="both", expand=True, padx=32, pady=(42, 20))
-        self.status_frame = tk.Frame(shell, bg=BG)
-        self.status_frame.pack(side="bottom", fill="x", pady=(8, 0))
-        self.progress = ttk.Progressbar(self.status_frame, mode="determinate", maximum=100)
-        self.status = label(self.status_frame, "", size=10, color=MUTED, wraplength=730)
-        self.status.pack(fill="x")
-        self.screens = Screens(shell)
+        shell.pack(side="left", fill="both", expand=True)
+        self.smoke = Smoke(self.root)
+        self.status_bar = StatusBar(shell, self.smoke)
+        self.status_bar.pack(side="bottom", fill="x")
+        self.progress, self.status = self.status_bar.progress, self.status_bar.status
+        self.screens = Screens(shell, self.smoke)
         self.screens.pack(fill="both", expand=True)
         self.updates_page = self.screens.add()
         self.tokens_page = self.screens.add()
         self.options_page = self.screens.add()
-        self._build_updates(self.updates_page.body)
-        self._build_tokens(self.tokens_page.body)
-        self._build_options(self.options_page.body)
+        self._build_updates(self.updates_page)
+        self._build_tokens(self.tokens_page)
+        self._build_options(self.options_page)
 
     def _logo(self, parent):
         path = Path(__file__).parent / "assets" / "digidice-logo.png"
@@ -190,7 +191,7 @@ class App:
                 # Trim only empty asset margins at display time; retain the original.
                 bounds = source.convert("L").point(lambda v: 255 if v > 45 else 0).getbbox()
                 image = source.crop(bounds) if bounds else source.copy()
-                image.thumbnail((208, 116), Image.Resampling.LANCZOS)
+                image.thumbnail((156, 40), Image.Resampling.LANCZOS)
                 self.logo = ImageTk.PhotoImage(image, master=self.root)
                 icon = source.crop((274, 323, 518, 548))
                 icon.thumbnail((32, 32), Image.Resampling.LANCZOS)
@@ -199,131 +200,125 @@ class App:
             tk.Label(parent, image=self.logo, bg=parent.cget("bg"),
                      borderwidth=0, highlightthickness=0).pack(fill="both", expand=True)
         except OSError:
-            label(parent, "DigiDice", size=21, color=CYAN, bold=True).pack(side="left")
+            label(parent, "DigiDice", size=17, color=CYAN, bold=True).pack(side="left", padx=12)
 
-    def _build_updates(self, parent):
-        heading = label(parent, "Keep your DigiDice ready", size=25, color=LIME, bold=True)
-        heading.pack(fill="x", pady=(8, 30))
-        heading.bind("<Configure>", lambda e: heading.configure(wraplength=max(200, e.width-4)))
-        main = Card(parent, padding=28)
-        main.pack(fill="x", padx=(0, 3))
+    def _build_updates(self, page):
+        main = page.card(padding=16)
         row = tk.Frame(main.body, bg=PANEL)
-        row.pack(fill="x", pady=(0, 26))
-        self.connection = label(row, "", size=12, color=MUTED)
-        self.connection.pack(side="left", fill="x", expand=True)
-        icon = tk.Canvas(row, width=48, height=48, bg=PANEL, highlightthickness=0)
-        icon.pack(side="right")
-        icon.create_arc(7, 7, 40, 40, start=20, extent=145, style="arc", outline=CYAN, width=3)
-        icon.create_arc(7, 7, 40, 40, start=200, extent=145, style="arc", outline=CYAN, width=3)
-        icon.create_line(33, 10, 40, 16, 42, 7, fill=CYAN, width=3)
-        icon.create_line(14, 38, 7, 32, 5, 41, fill=CYAN, width=3)
-        self.firmware_state = label(main.body, "", size=23, bold=True, wraplength=600)
-        self.firmware_state.pack(fill="x", pady=(0, 24))
+        row.pack(fill="x", pady=(0, 10))
+        self.connection = label(row, "", size=10, color=MUTED)
+        self.connection.pack(side="left")
+        label(row, "  ·  ", size=10, color=BORDER).pack(side="left")
+        self.firmware_state = label(row, "", size=14, bold=True)
+        self.firmware_state.pack(side="left", fill="x", expand=True)
         self.update_btn = self.button(main.body, "Get the latest update", self.online_action,
-                                      color=ORANGE, height=66, size=16)
-        self.update_btn.pack(fill="x", pady=(0, 22))
-        self.update_hint = label(main.body, "", size=11, color=MUTED, wraplength=600)
-        self.update_hint.pack(fill="x", pady=(0, 5))
-        main.body.bind("<Configure>", lambda e: [widget.configure(wraplength=max(200, e.width-4))
-                       for widget in (self.firmware_state, self.update_hint)])
+                                      color=ORANGE, height=46, size=13)
+        self.update_btn.pack(fill="x", pady=(0, 10))
+        self.update_hint = label(main.body, "", size=10, color=MUTED, wraplength=500)
+        self.update_hint.pack(fill="x")
+        main.body.bind("<Configure>", lambda e: self.update_hint.configure(wraplength=max(200, e.width-4)), add="+")
 
-    def _build_options(self, parent):
-        label(parent, "More options", size=24, color=LIME, bold=True).pack(fill="x", pady=(0, 20))
-        device = Card(parent)
-        device.pack(fill="x", padx=(0, 3), pady=(0, 14))
-        label(device.body, "Device connection", bold=True, size=13).pack(fill="x", pady=(0, 8))
-        label(device.body, "Devices are detected automatically. Select yours here if needed.",
-              color=MUTED, size=10, wraplength=580).pack(fill="x", pady=(0, 8))
-        self.drive_combo = ttk.Combobox(device.body, textvariable=self.drive_var, width=24)
-        self.drive_combo.pack(fill="x")
-        self.button(device.body, "Connection help", self.connection_help, height=34).pack(anchor="w", pady=(8, 0))
-        manual = Card(parent)
-        manual.pack(fill="x", padx=(0, 3), pady=(0, 14))
-        label(manual.body, "Install from a file", bold=True, size=13).pack(fill="x")
-        self.file_state = label(manual.body, "Choose app.bin.enc with its matching app.ver beside it.",
-                                color=MUTED, size=10, wraplength=580)
-        self.file_state.pack(fill="x", pady=8)
+    def _build_options(self, page):
+        device = page.card(padding=12, gap=8)
+        heading = tk.Frame(device.body, bg=PANEL)
+        heading.pack(fill="x", pady=(0, 6))
+        label(heading, "Device connection", bold=True, size=11).pack(side="left")
+        label(heading, "Detected automatically. Pick yours if needed.", color=MUTED, size=9).pack(side="right")
+        row = tk.Frame(device.body, bg=PANEL)
+        row.pack(fill="x")
+        self.button(row, "Connection help", self.connection_help, width=140, height=32, size=10).pack(side="right", padx=(8, 0))
+        self.drive_combo = ttk.Combobox(row, textvariable=self.drive_var, width=24)
+        self.drive_combo.pack(side="left", fill="x", expand=True)
+        manual = page.card(padding=12, gap=8)
+        heading = tk.Frame(manual.body, bg=PANEL)
+        heading.pack(fill="x", pady=(0, 6))
+        label(heading, "Install from a file", bold=True, size=11).pack(side="left")
+        self.file_state = label(heading, "Choose app.bin.enc with its matching app.ver beside it.",
+                                color=MUTED, size=9, wraplength=300)
+        self.file_state.pack(side="right")
         actions = tk.Frame(manual.body, bg=PANEL)
         actions.pack(fill="x")
-        self.browse_update = self.button(actions, "Choose update file…", self.choose_package, width=200, height=38)
+        self.browse_update = self.button(actions, "Choose update file…", self.choose_package, width=180, height=32, size=10)
         self.browse_update.pack(side="left")
         self.manual_update_btn = self.button(actions, "Install selected file", lambda: self.update_device("file"),
-                                             width=200, height=38)
+                                             width=180, height=32, size=10)
         self.manual_update_btn.pack(side="right")
-        app = Card(parent, padding=12)
-        app.pack(fill="x", pady=(0, 14), padx=(0, 3))
+        app = page.card(padding=12, gap=8)
         details = tk.Frame(app.body, bg=PANEL)
         details.pack(side="left", fill="x", expand=True)
         running_label = "Windows app" if digidice_update.is_frozen() else "Python source"
-        label(details, f"{running_label} • {APP_VERSION}", bold=True, size=12).pack(fill="x")
-        self.app_state = label(details, "", color=MUTED, size=10, wraplength=330)
-        self.app_state.pack(fill="x", pady=(3, 0))
-        self.app_update_btn = self.button(app.body, "Update & restart", self.update_app, color=PURPLE, width=182, height=44)
+        label(details, f"{running_label} • {APP_VERSION}", bold=True, size=11).pack(fill="x")
+        self.app_state = label(details, "", color=MUTED, size=9, wraplength=300)
+        self.app_state.pack(fill="x", pady=(2, 0))
+        self.app_update_btn = self.button(app.body, "Update & restart", self.update_app, color=PURPLE, width=160, height=34, size=10)
         self.app_update_btn.pack(side="right", padx=(12, 0))
-        self.log_toggle = Button(parent, "⌄   Activity log", self.toggle_log, width=170, height=36)
-        self.log_toggle.pack(anchor="w")
-        self.log_frame = tk.Frame(parent, bg=BG)
+        # On a card rather than the page: a widget's own background can't let
+        # the smoke through, so nothing sits on the bare page.
+        tools = page.card(padding=12, gap=0).body
+        self.log_row = tk.Frame(tools, bg=PANEL)
+        self.log_row.pack(fill="x")
+        self.log_toggle = Button(self.log_row, "⌄   Activity log", self.toggle_log, width=150, height=32, size=10)
+        self.log_toggle.pack(side="left")
+        Button(self.log_row, "Support & details", self.support, width=150, height=32, size=10).pack(side="right")
+        self.log_frame = tk.Frame(tools, bg=PANEL)
         self.log_text = tk.Text(self.log_frame, bg=PANEL, fg=MUTED, height=6,
                                 wrap="word", state="disabled", relief="flat", font=("Consolas", 9))
         self.log_text.pack(side="left", fill="both", expand=True)
         scrollbar = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
         scrollbar.pack(side="right", fill="y")
         self.log_text.configure(yscrollcommand=scrollbar.set)
-        Button(parent, "Support & details", self.support, width=170, height=36).pack(anchor="w", pady=10)
 
-    def _build_tokens(self, parent):
-        label(parent, "Upload tokens", size=23, color=LIME, bold=True).pack(fill="x", pady=(0, 3))
-        self.token_connection = label(parent, "", color=MUTED, size=11)
-        self.token_connection.pack(fill="x", pady=(8, 20))
-        card = Card(parent)
-        card.pack(fill="x", padx=(0, 3))
-        self.drop = tk.Frame(card.body, bg=PANEL, highlightthickness=1, highlightbackground=MUTED, pady=18)
+    def _build_tokens(self, page):
+        card = page.card(padding=14, gap=0)
+        top = tk.Frame(card.body, bg=PANEL)
+        top.pack(fill="x", pady=(0, 8))
+        self.token_connection = label(top, "", color=MUTED, size=10)
+        self.token_connection.pack(side="left")
+        label(top, "Fitted to your DigiDice automatically.", size=9, color=MUTED).pack(side="right")
+        self.drop = tk.Frame(card.body, bg=PANEL, highlightthickness=1, highlightbackground=MUTED, pady=8)
         self.drop.pack(fill="x")
         drop_heading = tk.Frame(self.drop, bg=PANEL)
         drop_heading.pack()
         drop_icon = tk.Canvas(drop_heading, width=40, height=36, bg=PANEL, highlightthickness=0)
-        drop_icon.pack(side="left", padx=(0, 10))
+        drop_icon.pack(side="left", padx=(0, 8))
         drop_icon.create_rectangle(4, 3, 35, 30, outline=CYAN, width=2)
         drop_icon.create_line(7, 27, 16, 15, 23, 22, 28, 16, 33, 22, fill=CYAN, width=2)
         drop_icon.create_oval(26, 7, 30, 11, fill=CYAN, outline=CYAN)
-        drop_title = label(drop_heading, "Drop images here", size=17, bold=True)
+        drop_title = label(drop_heading, "Drop images here", size=13, bold=True)
         drop_title.pack(side="left")
-        drop_or = label(self.drop, "or", size=10, color=MUTED)
-        drop_or.pack(pady=4)
-        self.browse_images_btn = self.button(self.drop, "Browse images", self.browse_images, width=190, height=42)
-        self.browse_images_btn.pack()
+        drop_or = label(drop_heading, "  or  ", size=10, color=MUTED)
+        drop_or.pack(side="left")
+        self.browse_images_btn = self.button(drop_heading, "Browse images", self.browse_images, width=140, height=34, size=10)
+        self.browse_images_btn.pack(side="left")
         if HAS_DND:
             for target in (self.drop, drop_heading, drop_icon, drop_title, drop_or, self.browse_images_btn):
                 target.drop_target_register(DND_FILES)
                 target.dnd_bind("<<Drop>>", self._drop_images)
-        caption = tk.Frame(card.body, bg=PANEL)
-        caption.pack(fill="x", pady=(16, 10))
-        self.queue_label = label(caption, "No images selected", bold=True, size=12)
-        self.queue_label.pack(side="left")
-        label(caption, "Automatically fits images\nto your DigiDice.", size=10, color=MUTED).pack(side="right")
-        self.preview_canvas = tk.Canvas(card.body, bg=PANEL, height=198, highlightthickness=0)
-        self.preview_canvas.pack(fill="x")
+        self.preview_canvas = tk.Canvas(card.body, bg=PANEL, height=PREVIEW_SIZE[1] + 44, highlightthickness=0)
+        self.preview_canvas.pack(fill="x", pady=(10, 0))
         self.preview_body = tk.Frame(self.preview_canvas, bg=PANEL)
         self.preview_canvas.create_window(0, 0, anchor="nw", window=self.preview_body)
         self.preview_body.bind("<Configure>", lambda e: self.preview_canvas.configure(scrollregion=self.preview_canvas.bbox("all")))
         self.preview_scroll = ttk.Scrollbar(card.body, orient="horizontal", command=self.preview_canvas.xview)
-        self.preview_scroll.pack(fill="x", pady=(0, 12))
+        self.preview_scroll.pack(fill="x", pady=(0, 8))
         self.preview_canvas.configure(xscrollcommand=self._preview_scrollbar)
-        label(self.preview_body, "Your selected images will appear here.\nPreviews show the crop used on your device.", color=MUTED).pack(pady=50, padx=20)
+        label(self.preview_body, PREVIEW_PLACEHOLDER, color=MUTED, size=10).pack(pady=40, padx=16)
         actions = tk.Frame(card.body, bg=PANEL)
         self.token_actions = actions
         actions.pack(fill="x")
-        self.upload_btn = self.button(actions, "↑   Upload tokens", self.upload_tokens, color=BLUE, width=220, height=48, size=13)
+        self.queue_label = label(actions, "No images selected", bold=True, size=11)
+        self.queue_label.pack(side="left")
+        self.upload_btn = self.button(actions, "↑   Upload tokens", self.upload_tokens, color=BLUE, width=200, height=38, size=11)
         self.upload_btn.pack(side="right")
-        self.clear_btn = self.button(actions, "Clear", self.clear_images, color=RED, width=105, height=48)
-        self.clear_btn.pack(side="right", padx=(0, 12))
+        self.clear_btn = self.button(actions, "Clear", self.clear_images, color=RED, width=90, height=38, size=10)
+        self.clear_btn.pack(side="right", padx=(0, 10))
 
     def _preview_scrollbar(self, first, last):
         self.preview_scroll.set(first, last)
         if float(first) <= 0 and float(last) >= 1:
             self.preview_scroll.pack_forget()
         elif not self.preview_scroll.winfo_manager():
-            self.preview_scroll.pack(fill="x", pady=(0, 12), before=self.token_actions)
+            self.preview_scroll.pack(fill="x", pady=(0, 8), before=self.token_actions)
 
     def show_screen(self, index):
         self.screens.show(index)
@@ -514,7 +509,7 @@ class App:
         self.busy = True
         self.set_status(title)
         self.log(title)
-        self.progress.pack(fill="x", before=self.status, pady=(0, 5))
+        self.status_bar.show_progress(True)
         self.progress.configure(mode="indeterminate")
         self.progress.start(12)
         self.sync()
@@ -530,7 +525,7 @@ class App:
 
     def _job_finished(self, done, result, error):
         self.progress.stop()
-        self.progress.pack_forget()
+        self.status_bar.show_progress(False)
         self.busy = False
         online_job = self.online_busy
         self.online_busy = ""
@@ -728,16 +723,16 @@ class App:
             child.destroy()
         self.preview_refs = []
         if not self.pending:
-            label(self.preview_body, "Your selected images will appear here.\nPreviews show the crop used on your device.", color=MUTED).pack(pady=50, padx=20)
+            label(self.preview_body, PREVIEW_PLACEHOLDER, color=MUTED, size=10).pack(pady=40, padx=16)
         for item in self.pending:
             slot = tk.Frame(self.preview_body, bg=PANEL)
-            slot.pack(side="left", anchor="n", padx=(0, 12))
+            slot.pack(side="left", anchor="n", padx=(0, 10))
             image = ImageTk.PhotoImage(item.preview, master=self.root)
             self.preview_refs.append(image)
             tk.Label(slot, image=image, bg=BG, highlightthickness=1, highlightbackground=BORDER).pack()
             name = Path(item.path).name
             display_name = name if len(name) <= 24 else name[:17] + "…" + Path(name).suffix
-            label(slot, display_name, color=MUTED, size=9, wraplength=108, height=2).pack(pady=(5, 0))
+            label(slot, display_name, color=MUTED, size=9, wraplength=PREVIEW_SIZE[0], height=2).pack(pady=(5, 0))
         self.preview_canvas.xview_moveto(0)
 
     def clear_images(self):
@@ -778,7 +773,7 @@ class App:
     def toggle_log(self):
         self.log_open = not self.log_open
         if self.log_open:
-            self.log_frame.pack(fill="x", after=self.log_toggle, pady=(8, 0))
+            self.log_frame.pack(fill="x", after=self.log_row, pady=(8, 0))
         else:
             self.log_frame.pack_forget()
         self.log_toggle.set_text(("⌃" if self.log_open else "⌄") + "   Activity log")
@@ -817,6 +812,7 @@ class App:
         for job in (self._pump_id, self._drive_job, self._poll_id):
             if job:
                 self.root.after_cancel(job)
+        self.smoke.stop()
         self.screens.destroy()
         self.root.destroy()
 

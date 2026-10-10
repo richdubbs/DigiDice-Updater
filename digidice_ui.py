@@ -1,11 +1,14 @@
 """Small Tk widgets for the DigiDice desktop UI. All animation runs on Tk's loop."""
 
 import ctypes
+import math
+import random
 import sys
 import time
 import tkinter as tk
 from tkinter import ttk
 from tkinter import font as tkfont
+from PIL import Image, ImageOps, ImageTk
 
 BG = "#080f14"
 PANEL = "#101c25"
@@ -228,47 +231,194 @@ class Button(tk.Canvas):
         self.set_color("#192e3e" if selected else PANEL)
 
 
-class Card(tk.Canvas):
-    """Rounded border surrounding ordinary accessible Tk content."""
-    def __init__(self, parent, padding=15, **kwargs):
-        super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0, **kwargs)
-        self.padding = padding
+def _wrap_resize(image, size):
+    """Resize a tiling image so it still tiles: resample across its own seams."""
+    w, h = image.size
+    sheet = Image.new(image.mode, (w*3, h*3))
+    for i in range(3):
+        for j in range(3):
+            sheet.paste(image, (i*w, j*h))
+    sheet = sheet.resize((size*3, size*3), Image.Resampling.BICUBIC)
+    return sheet.crop((size, size, size*2, size*2))
+
+
+def _fractal(rng, base, octaves):
+    out = total = None
+    for cells, weight in octaves:
+        grid = Image.frombytes("L", (cells, cells), bytes(rng.randrange(256) for _ in range(cells*cells)))
+        layer = _wrap_resize(grid, base)
+        if out is None:
+            out, total = layer, weight
+        else:
+            total += weight
+            out = Image.blend(out, layer, weight/total)
+    return ImageOps.autocontrast(out, cutoff=1)
+
+
+def smoke_texture(size=1024, seed=7, base=160):
+    """A seamlessly tiling sheet of dark smoke: fractal noise, domain-warped.
+
+    Built small and scaled up, so it takes about 60ms, once, at startup.
+    """
+    rng = random.Random(seed)
+    octaves = ((2, 8), (4, 5), (8, 3), (16, 1.5), (32, .6))
+    field = _fractal(rng, base, octaves).tobytes()
+    wx = _fractal(rng, base, octaves[:3]).tobytes()
+    wy = _fractal(rng, base, octaves[:3]).tobytes()
+    reach = base * .45 / 255
+    warped = bytearray(base*base)
+    for i in range(base*base):
+        x = int(i % base + (wx[i]-128)*reach) % base
+        y = int(i // base + (wy[i]-128)*reach) % base
+        warped[i] = field[y*base + x]
+    smoke = Image.frombytes("L", (base, base), bytes(warped)).point(lambda v: int(255 * (v/255) ** 1.6))
+    return ImageOps.colorize(_wrap_resize(smoke, size), black=BG, mid="#12304a",
+                             white="#2e6a8c", midpoint=135)
+
+
+class Smoke:
+    """Slowly drifting smoke behind the pages.
+
+    Tk has no shaders and its frames are opaque, so the texture is built once
+    and each surface that shows it is a Canvas holding tiles of that one image,
+    positioned from where the canvas sits in the window. The surfaces read as
+    one continuous sheet, through page slides and scrolling too, and a tick
+    only moves tiles: nothing is ever redrawn into the image.
+    """
+    SPEED = (9.0, 4.0)  # px/s
+
+    def __init__(self, root, tile=1024):
+        self.root, self.tile = root, tile
+        self.image = ImageTk.PhotoImage(smoke_texture(tile), master=root)
+        self.surfaces = {}
+        self.drift = (0, 0)
+        self.began = time.monotonic()
+        self._job = None
+        if animations_enabled():
+            self._job = root.after(33, self._tick)
+
+    def attach(self, canvas):
+        self.surfaces[canvas] = []
+        canvas.bind("<Configure>", lambda e: self.paint(canvas), add="+")
+        canvas.bind("<Destroy>", lambda e: e.widget is canvas and self.surfaces.pop(canvas, None), add="+")
+        self.paint(canvas)
+
+    def paint(self, canvas):
+        tiles = self.surfaces.get(canvas)
+        if tiles is None:
+            return
+        t = self.tile
+        across = canvas.winfo_width() // t + 2
+        down = canvas.winfo_height() // t + 2
+        while len(tiles) < across*down:
+            tiles.append(canvas.create_image(0, 0, image=self.image, anchor="nw", tags="smoke"))
+            canvas.tag_lower(tiles[-1])
+        x = canvas.winfo_rootx() - self.root.winfo_rootx() + self.drift[0]
+        y = canvas.winfo_rooty() - self.root.winfo_rooty() + self.drift[1]
+        left, top = canvas.canvasx(0) - x % t, canvas.canvasy(0) - y % t
+        for i, item in enumerate(tiles):
+            canvas.coords(item, left + (i % across)*t, top + (i // across)*t)
+
+    def _tick(self):
+        elapsed = time.monotonic() - self.began
+        drift = (math.floor(elapsed*self.SPEED[0]), math.floor(elapsed*self.SPEED[1]))
+        if drift != self.drift and self.root.state() != "iconic":
+            self.drift = drift
+            for canvas in list(self.surfaces):
+                self.paint(canvas)
+        self._job = self.root.after(33, self._tick)
+
+    def stop(self):
+        if self._job:
+            self.root.after_cancel(self._job)
+            self._job = None
+
+
+class CanvasText:
+    """A canvas text item that answers configure() and cget() like a Label."""
+    def __init__(self, canvas, item, changed=None):
+        self.canvas, self.item, self.changed = canvas, item, changed
+
+    def configure(self, cnf=None, **kwargs):
+        kwargs = {**(cnf or {}), **kwargs}
+        options = {"fill" if key == "fg" else key: value for key, value in kwargs.items()}
+        self.canvas.itemconfigure(self.item, **options)
+        if self.changed:
+            self.changed()
+
+    config = configure
+
+    def cget(self, key):
+        return self.canvas.itemcget(self.item, "fill" if key == "fg" else key)
+
+
+class Card:
+    """Rounded panel drawn on a page's canvas, holding ordinary accessible Tk content."""
+    def __init__(self, page, padding=15):
+        self.page, self.padding = page, padding
         self.border_color = BORDER
-        self.body = tk.Frame(self, bg=PANEL)
-        self._window = self.create_window(padding, padding, window=self.body, anchor="nw")
-        self.bind("<Configure>", self._layout)
-        self.body.bind("<Configure>", self._measure)
+        self.tag = f"card{id(self)}"
+        self.body = tk.Frame(page.canvas, bg=PANEL)
+        self._window = page.canvas.create_window(0, 0, window=self.body, anchor="nw")
+        self.body.bind("<Configure>", lambda e: page.schedule(), add="+")
 
-    def _measure(self, event=None):
-        desired = self.body.winfo_reqheight() + self.padding*2
-        if int(float(self.cget("height"))) != desired:
-            self.configure(height=desired)
-
-    def _layout(self, event=None):
-        w = self.winfo_width()
-        self.itemconfigure(self._window, width=max(1, w-self.padding*2))
-        self.delete("border")
-        rounded(self, 1, 1, max(1, w-3), max(1, self.winfo_height()-3),
-                fill=PANEL, outline=self.border_color, tags="border")
-        self.tag_lower("border")
+    def place_at(self, x, y, width):
+        canvas, p = self.page.canvas, self.padding
+        height = self.body.winfo_reqheight() + p*2
+        canvas.coords(self._window, x + p, y + p)
+        canvas.itemconfigure(self._window, width=max(1, width - p*2))
+        canvas.delete(self.tag)
+        rounded(canvas, x + 1, y + 1, max(1, width - 3), max(1, height - 3),
+                fill=PANEL, outline=self.border_color, tags=self.tag)
+        canvas.tag_lower(self.tag)
+        canvas.tag_lower("smoke")
+        return height
 
     def set_border(self, color):
         self.border_color = color
-        self.itemconfigure("border", outline=color)
+        self.page.canvas.itemconfigure(self.tag, outline=color)
 
 
 class Scroller(tk.Frame):
-    def __init__(self, parent):
+    """One page: cards stacked down a canvas the smoke shows through."""
+    MARGIN = (18, 18, 20, 6)  # left, top, right, bottom
+
+    def __init__(self, parent, smoke):
         super().__init__(parent, bg=BG)
+        self.smoke = smoke
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
         self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._scrollbar)
         self.bar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.body = tk.Frame(self.canvas, bg=BG)
-        self.window = self.canvas.create_window(0, 0, window=self.body, anchor="nw")
-        self.body.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.window, width=e.width))
+        self.entries = []
+        self._job = None
+        smoke.attach(self.canvas)
+        self.canvas.bind("<Configure>", lambda e: self.layout(), add="+")
+        # A slide moves this frame, not the canvas inside it.
+        self.bind("<Configure>", lambda e: smoke.paint(self.canvas), add="+")
+
+    def card(self, padding=15, gap=14):
+        card = Card(self, padding)
+        self.entries.append((card, gap))
+        self.schedule()
+        return card
+
+    def schedule(self):
+        if not self._job:
+            self._job = self.after_idle(self.layout)
+
+    def layout(self):
+        if self._job:
+            self.after_cancel(self._job)
+            self._job = None
+        canvas = self.canvas
+        left, top, right, bottom = self.MARGIN
+        width = max(1, canvas.winfo_width() - left - right)
+        y = top
+        for card, gap in self.entries:
+            y += card.place_at(left, y, width) + gap
+        canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), y + bottom))
 
     def _scrollbar(self, first, last):
         self.bar.set(first, last)
@@ -276,21 +426,59 @@ class Scroller(tk.Frame):
             self.bar.pack_forget()
         elif not self.bar.winfo_manager():
             self.bar.pack(side="right", fill="y", before=self.canvas)
+        self.smoke.paint(self.canvas)
 
     def scroll(self, delta):
-        if self.body.winfo_height() > self.canvas.winfo_height():
+        region = self.canvas.cget("scrollregion").split()
+        if region and float(region[3]) > self.canvas.winfo_height():
             self.canvas.yview_scroll(delta, "units")
 
 
-class Screens(tk.Frame):
+class StatusBar(tk.Canvas):
+    """The status line and progress bar under the pages, on the same smoke."""
+    MARGIN = 18
+
+    def __init__(self, parent, smoke):
+        super().__init__(parent, bg=BG, highlightthickness=0, height=1)
+        self.progress = ttk.Progressbar(self, mode="determinate", maximum=100)
+        self._bar = self.create_window(self.MARGIN, 0, window=self.progress, anchor="nw", state="hidden")
+        self._text = self.create_text(self.MARGIN, 0, anchor="nw", fill=MUTED, font=("Segoe UI", 10))
+        self.status = CanvasText(self, self._text, self._layout)
+        self.bind("<Configure>", lambda e: self._layout(), add="+")
+        smoke.attach(self)
+
+    def show_progress(self, shown):
+        self.itemconfigure(self._bar, state="normal" if shown else "hidden")
+        self._layout()
+
+    def _layout(self):
+        width = max(1, self.winfo_width() - self.MARGIN*2)
+        y = 2
+        if self.itemcget(self._bar, "state") == "normal":
+            self.coords(self._bar, self.MARGIN, y)
+            self.itemconfigure(self._bar, width=width)
+            y += self.progress.winfo_reqheight() + 5
+        self.coords(self._text, self.MARGIN, y)
+        self.itemconfigure(self._text, width=width)
+        box = self.bbox(self._text)
+        if box and self.itemcget(self._text, "text"):
+            y = box[3]
+        height = y + 8
+        if int(float(self.cget("height"))) != height:
+            self.configure(height=height)
+
+
+class Screens(tk.Canvas):
     """120ms directional slide; rapid navigation settles the previous tween."""
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
+    def __init__(self, parent, smoke):
+        super().__init__(parent, bg=BG, highlightthickness=0)
+        self.smoke = smoke
+        smoke.attach(self)
         self.pages, self.active, self._job = [], None, None
         self.motion = animations_enabled()
 
     def add(self):
-        page = Scroller(self)
+        page = Scroller(self, self.smoke)
         self.pages.append(page)
         return page
 
